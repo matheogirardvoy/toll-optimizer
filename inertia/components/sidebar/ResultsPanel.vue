@@ -19,7 +19,14 @@ export type TollDecision = {
   name: string;
   networkName: string;
   priceCents: number | null;
-  status: 'kept' | 'avoided';
+  /** `unknown` : franchissement détecté mais intarifable (réseau non couvert…). */
+  status: 'kept' | 'avoided' | 'unknown';
+  /** Prix par heure gagnée en gardant ce péage, ex. « 26 €/h ». */
+  ratioLabel: string | null;
+  /** Détail de l'évitement, ex. « +20 min si évité ». */
+  detail: string | null;
+  /** Point de recentrage carte ([lng, lat]). */
+  focus: [number, number] | null;
 };
 
 defineProps<{
@@ -97,11 +104,12 @@ function signedDuration(seconds: number): string {
           :class="[`toll-item-${toll.status}`, { 'toll-selected': toll.id === selectedTollId }]"
           @click="emit('toll-click', toll)"
       >
-        <span class="toll-item-icon">{{ toll.status === 'kept' ? '✅' : '🚫' }}</span>
+        <span class="toll-item-icon">{{ toll.status === 'kept' ? '✅' : toll.status === 'avoided' ? '🚫' : '❓' }}</span>
         <span class="toll-item-name">
           {{ toll.name }}
-          <small>{{ toll.networkName }}</small>
+          <small>{{ toll.networkName }}{{ toll.detail ? ` · ${toll.detail}` : '' }}</small>
         </span>
+        <span v-if="toll.ratioLabel" class="toll-item-ratio">{{ toll.ratioLabel }}</span>
         <span class="toll-item-price">
           {{ toll.priceCents === null ? '?' : euros(toll.priceCents) }}
         </span>
@@ -120,6 +128,13 @@ function signedDuration(seconds: number): string {
     border: 1px solid rgba(245, 158, 11, 0.35);
     border-radius: var(--radius-sm);
     padding: .5rem .65rem;
+  }
+
+  /* Franchissement intarifable : ni conservé ni évité, juste signalé */
+  .toll-item-unknown {
+    background: rgba(245, 158, 11, 0.08);
+    border-color: rgba(245, 158, 11, 0.3);
+    color: #92400e;
   }
 }
 </style>

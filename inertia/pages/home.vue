@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed, ref, watch} from "vue";
 import RouteForm from "~/components/route/RouteForm.vue";
-import MapView from "~/components/map/MapView.vue";
+import MapView, {DisplayedRoute} from "~/components/map/MapView.vue";
 import ChartPanel from "~/components/map/ChartPanel.vue";
 import LegendCard from "~/components/sidebar/LegendCard.vue";
 import ThresholdCard from "~/components/map/ThresholdCard.vue";
@@ -9,10 +9,12 @@ import RouteSwitcher, {RouteTabStat, RouteVariantKey} from "~/components/sidebar
 import ResultsPanel, {ResultsSummary, TollDecision} from "~/components/sidebar/ResultsPanel.vue";
 import emitter from "~/composables/useEvent";
 import useOptimizer, {
+  CrossedStation,
   EvaluatedRoute,
   OptimizeError,
   OptimizeResult,
   RouteTollSection,
+  SectionDecision,
   VehicleClass,
 } from "~/composables/engine/useOptimizer";
 import {Feature} from "~/composables/map/useMapbox";
@@ -49,10 +51,18 @@ emitter.on('routeFormMessage', (e) => {
 
 function onSelectStart(f: Feature) {
   useLocationStore().setStart(f);
+  resetResult();
 }
 
 function onSelectEnd(f: Feature) {
   useLocationStore().setEnd(f);
+  resetResult();
+}
+
+/** Un nouveau départ/arrivée invalide le résultat affiché. */
+function resetResult() {
+  result.value = null;
+  selectedTollId.value = null;
 }
 
 /** Le <select> du formulaire renvoie 'cl1'…'cl5'. */
@@ -97,29 +107,48 @@ const activeRoute = computed<EvaluatedRoute|null>(() => {
   }
 });
 
+/** Ce qu'est la route recommandée, affiché sous le libellé de son onglet. */
+function bestDetail(optimized: OptimizeResult): string | null {
+  switch (optimized.best.kind) {
+    case 'fastest':
+      return '= le + rapide';
+    case 'no-toll':
+      return '= sans péage';
+    case 'alternative':
+      return 'itinéraire alternatif';
+    case 'hybrid': {
+      const keptIds = new Set(optimized.best.pricing.sections.map(sectionId));
+      const avoided = optimized.fastest.pricing.sections.filter(
+          (section) => !keptIds.has(sectionId(section))).length;
+      return avoided > 0 ? `évite ${avoided} péage${avoided > 1 ? 's' : ''}` : 'itinéraire modifié';
+    }
+  }
+}
+
 const tabStats = computed<RouteTabStat[]>(() => {
   if (!result.value) return [];
+
+  const makeTab = (
+      key: RouteVariantKey,
+      label: string,
+      route: EvaluatedRoute,
+      detail: string | null,
+  ): RouteTabStat => ({
+    key,
+    label,
+    detail,
+    priceCents: route.pricing.totalCents,
+    pricingComplete: route.pricing.complete,
+    durationSeconds: route.durationSeconds,
+    distanceMeters: route.distanceMeters,
+  });
+
   const tabs: RouteTabStat[] = [
-    {
-      key: 'best',
-      label: '⭐ Recommandé',
-      priceCents: result.value.best.pricing.totalCents,
-      durationSeconds: result.value.best.durationSeconds,
-    },
-    {
-      key: 'fastest',
-      label: '⚡ Le + rapide',
-      priceCents: result.value.fastest.pricing.totalCents,
-      durationSeconds: result.value.fastest.durationSeconds,
-    },
+    makeTab('best', '⭐ Recommandé', result.value.best, bestDetail(result.value)),
+    makeTab('fastest', '⚡ Le + rapide', result.value.fastest, null),
   ];
   if (result.value.noToll) {
-    tabs.push({
-      key: 'no-toll',
-      label: '🆓 Sans péage',
-      priceCents: result.value.noToll.pricing.totalCents,
-      durationSeconds: result.value.noToll.durationSeconds,
-    });
+    tabs.push(makeTab('no-toll', '🆓 Sans péage', result.value.noToll, null));
   }
   return tabs;
 });
@@ -127,6 +156,8 @@ const tabStats = computed<RouteTabStat[]>(() => {
 function switchToVariant(variant: RouteVariantKey) {
   activeVariant.value = variant;
   selectedTollId.value = null;
+  // Bascule instantanée : les trois tracés sont déjà sur la carte
+  map.value?.setActiveVariant(variant);
 }
 
 const summary = computed<ResultsSummary|null>(() => {
@@ -141,8 +172,9 @@ const summary = computed<ResultsSummary|null>(() => {
   };
 });
 
+/** Même format de clé que `sectionKey` côté serveur (décisions). */
 function sectionId(section: RouteTollSection): string {
-  return `${section.entry.stationId}-${section.exit?.stationId ?? 'open'}`;
+  return `${section.entry.stationId}:${section.exit?.stationId ?? 'open'}`;
 }
 
 function sectionName(section: RouteTollSection): string {
@@ -151,52 +183,101 @@ function sectionName(section: RouteTollSection): string {
       : `${section.entry.stationName} (barrière)`;
 }
 
+function decisionFor(key: string): SectionDecision | null {
+  return result.value?.decisions.find((decision) => decision.sectionKey === key) ?? null;
+}
+
+function ratioLabel(decision: SectionDecision | null): string | null {
+  if (decision?.ratioCentsPerHour == null) return null;
+  return `${Math.round(decision.ratioCentsPerHour / 100)} €/h`;
+}
+
+function avoidanceDetail(decision: SectionDecision | null): string | null {
+  if (decision?.extraDurationSeconds == null) return null;
+  return `+${Math.round(decision.extraDurationSeconds / 60)} min si évité`;
+}
+
+function focusOf(station: CrossedStation): [number, number] | null {
+  const point = station.points[0];
+  return point ? [point.longitude, point.latitude] : null;
+}
+
 /**
- * Péages de la variante affichée (conservés), plus ceux de la route rapide
- * qu'elle permet d'éviter.
+ * Péages de la variante affichée (conservés), ceux de la route rapide
+ * qu'elle permet d'éviter, et les franchissements intarifables (réseau non
+ * couvert, sortie introuvable) — la liste doit refléter tout ce qui est
+ * franchi, pas seulement ce qui a pu être chiffré.
  */
 const tolls = computed<TollDecision[]>(() => {
   if (!result.value || !activeRoute.value) return [];
 
-  const kept: TollDecision[] = activeRoute.value.pricing.sections.map((section) => ({
-    id: sectionId(section),
-    name: sectionName(section),
-    networkName: section.networkName,
-    priceCents: section.priceCents,
-    status: 'kept',
-  }));
+  const toDecision = (section: RouteTollSection, status: 'kept' | 'avoided'): TollDecision => {
+    const key = sectionId(section);
+    const decision = decisionFor(key);
+    return {
+      id: status === 'kept' ? key : `avoided-${key}`,
+      name: sectionName(section),
+      networkName: section.networkName,
+      priceCents: section.priceCents,
+      status,
+      ratioLabel: ratioLabel(decision),
+      detail: avoidanceDetail(decision),
+      focus: focusOf(section.entry),
+    };
+  };
 
+  const kept = activeRoute.value.pricing.sections.map((section) => toDecision(section, 'kept'));
   const keptIds = new Set(kept.map((toll) => toll.id));
-  const avoided: TollDecision[] = result.value.fastest.pricing.sections
+  const avoided = result.value.fastest.pricing.sections
       .filter((section) => !keptIds.has(sectionId(section)))
-      .map((section) => ({
-        id: `avoided-${sectionId(section)}`,
-        name: sectionName(section),
-        networkName: section.networkName,
-        priceCents: section.priceCents,
-        status: 'avoided',
-      }));
+      .map((section) => toDecision(section, 'avoided'));
 
-  return [...kept, ...avoided];
+  const unknown = activeRoute.value.pricing.issues.flatMap((issue): TollDecision[] => {
+    if (issue.type === 'missing-price') return []; // déjà visible en section « ? »
+    return [{
+      id: `unknown-${issue.station.stationId}-${Math.round(issue.station.alongMeters)}`,
+      name: issue.type === 'unpaired-entry'
+          ? `${issue.station.stationName} (sortie introuvable)`
+          : issue.station.stationName,
+      networkName: issue.type === 'unpaired-entry' ? issue.networkName : 'réseau non couvert',
+      priceCents: null,
+      status: 'unknown',
+      ratioLabel: null,
+      detail: null,
+      focus: focusOf(issue.station),
+    }];
+  });
+
+  return [...kept, ...avoided, ...unknown];
 });
 
 /** Recentre la carte sur l'entrée de la section cliquée. */
 function onTollClick(decision: TollDecision) {
   selectedTollId.value = decision.id === selectedTollId.value ? null : decision.id;
-  if (!result.value || !activeRoute.value || selectedTollId.value === null) return;
-
-  const source = decision.status === 'kept' ? activeRoute.value : result.value.fastest;
-  const section = source.pricing.sections.find((candidate) =>
-      decision.id.endsWith(sectionId(candidate)));
-  const point = section?.entry.points[0];
-  if (point) {
-    map.value?.focusPoint([point.longitude, point.latitude]);
+  if (selectedTollId.value !== null && decision.focus) {
+    map.value?.focusPoint(decision.focus);
   }
 }
 
-watch(activeRoute, (route) => {
-  if (!route || !result.value) return;
-  map.value?.showResult(result.value.fastest.geometry, route.geometry);
+/** Clic sur une colonne du graphique : sélectionne la ligne correspondante. */
+function onChartSelect(sectionKey: string) {
+  const toll = tolls.value.find((candidate) =>
+      candidate.id === sectionKey || candidate.id === `avoided-${sectionKey}`);
+  if (toll) onTollClick(toll);
+}
+
+// Les trois variantes sont envoyées une seule fois à la carte ; les
+// bascules d'onglet ne touchent ensuite qu'aux filtres des layers.
+watch(result, (optimized) => {
+  if (!optimized) return;
+  const routes: DisplayedRoute[] = [
+    { key: 'best', geometry: optimized.best.geometry },
+    { key: 'fastest', geometry: optimized.fastest.geometry },
+  ];
+  if (optimized.noToll) {
+    routes.push({ key: 'no-toll', geometry: optimized.noToll.geometry });
+  }
+  map.value?.showRoutes(routes, activeVariant.value);
 });
 </script>
 
@@ -250,6 +331,10 @@ watch(activeRoute, (route) => {
       <p>Analyse des péages en cours…</p>
     </div>
 
-    <ChartPanel/>
+    <ChartPanel
+        :decisions="result?.decisions ?? []"
+        :threshold-cents-per-hour="result ? result.rhoCentsPerMinute * 60 : null"
+        @select="onChartSelect"
+    />
   </div>
 </template>

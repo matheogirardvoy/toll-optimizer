@@ -66,6 +66,27 @@ export default class OptimizeRoute extends BaseCommand {
       }
     }
 
+    if (result.decisions.length > 0) {
+      this.logger.info('Rentabilité par tronçon (garder le péage coûte X €/h gagnée) :')
+      for (const decision of result.decisions) {
+        const path = decision.exitStationName
+          ? `${decision.entryStationName} → ${decision.exitStationName}`
+          : `${decision.entryStationName} (barrière)`
+        const ratio =
+          decision.ratioCentsPerHour === null
+            ? 'inévitable'
+            : `${(decision.ratioCentsPerHour / 100).toFixed(2)} €/h`
+        const extra =
+          decision.extraDurationSeconds === null
+            ? ''
+            : ` (+${Math.round(decision.extraDurationSeconds / 60)} min si évité)`
+        const flags = decision.reliable ? '' : '  [comparaison incertaine]'
+        this.logger.log(
+          `  ${decision.keptInBest ? '✅' : '🚫'} ${ratio.padStart(10)}  ${path}${extra}${flags}`
+        )
+      }
+    }
+
     for (const warning of result.warnings) {
       this.logger.warning(warning)
     }
