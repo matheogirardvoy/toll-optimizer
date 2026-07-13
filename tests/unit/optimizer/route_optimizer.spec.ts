@@ -34,6 +34,8 @@ const FREE_ROUTE: DirectionsRoute = { duration: 2400, distance: 32000, geometry:
 class FakeDirections implements DirectionsGateway {
   queries: DirectionsQuery[] = []
 
+  constructor(private freeRoute: DirectionsRoute = FREE_ROUTE) {}
+
   async fetchRoutes(
     _start: LngLat,
     _end: LngLat,
@@ -41,7 +43,7 @@ class FakeDirections implements DirectionsGateway {
   ): Promise<DirectionsRoute[]> {
     this.queries.push(query)
     if (query.excludeTolls || (query.excludePoints?.length ?? 0) > 0) {
-      return [FREE_ROUTE]
+      return [this.freeRoute]
     }
     return [MOTORWAY_ROUTE]
   }
@@ -97,6 +99,19 @@ test.group('RouteOptimizer', (group) => {
     assert.equal(result.best.durationSeconds, 1200)
     // Le retrait a bien été tenté puis rejeté.
     assert.isTrue(result.evaluated.some((route) => route.kind === 'hybrid'))
+
+    // L'analyse chiffre le tronçon : l'éviter coûte 20 min pour 8,50 €
+    // d'économie, soit 25,50 € par heure gagnée en le gardant.
+    assert.lengthOf(result.decisions, 1)
+    const decision = result.decisions[0]
+    assert.isTrue(decision.keptInBest)
+    assert.isTrue(decision.reliable)
+    assert.equal(decision.priceCents, 850)
+    assert.equal(decision.extraDurationSeconds, 1200)
+    assert.equal(decision.savedCents, 850)
+    assert.equal(decision.ratioCentsPerHour, 2550)
+    assert.equal(decision.entryStationName, 'Gare Nord')
+    assert.equal(decision.exitStationName, 'Gare Sud')
   })
 
   test('retire un péage non rentable', async ({ assert }) => {
@@ -112,6 +127,9 @@ test.group('RouteOptimizer', (group) => {
     assert.equal(result.best.durationSeconds, 2400)
     // La rapide reste disponible comme référence.
     assert.equal(result.fastest.pricing.totalCents, 850)
+    // Le tronçon écarté est marqué comme tel dans l'analyse.
+    assert.lengthOf(result.decisions, 1)
+    assert.isFalse(result.decisions[0].keptInBest)
   })
 
   test('exclut les portes des deux gares du couloir du tronçon', async ({ assert }) => {
@@ -137,8 +155,42 @@ test.group('RouteOptimizer', (group) => {
 
     assert.equal(result.best.kind, 'fastest')
     assert.equal(result.best.pricing.totalCents, 0)
+    assert.lengthOf(result.decisions, 0)
     // Une requête standard + une sans-péage, aucune tentative de retrait.
     assert.lengthOf(directions.queries, 2)
+  })
+
+  test('recommande une route incomplète quand son avance couvre la pénalité pessimiste', async ({ assert }) => {
+    // Tronçon franchi mais sans prix en grille → tarification incomplète.
+    const network = await seedNetwork('closed')
+    await seedStation({ name: 'Gare Est', networkId: network.id, points: [[4.05, 45.00005]] })
+    await seedStation({ name: 'Gare Ouest', networkId: network.id, points: [[4.25, 45.00005]] })
+
+    // Alternative sans péage démesurément lente (200 min vs 20 min) : même
+    // en prêtant 20 € à l'inconnue, la rapide reste largement devant.
+    const slowFree: DirectionsRoute = { duration: 12000, distance: 60000, geometry: FREE_ROAD }
+    const optimizer = new RouteOptimizer(new FakeDirections(slowFree), new RoutePricer())
+
+    const result = await optimizer.optimize(makeQuery(2000, 60))
+
+    assert.equal(result.best.kind, 'fastest')
+    assert.isFalse(result.best.pricing.complete)
+    assert.isTrue(result.warnings.some((warning) => warning.includes('sous-estimé')))
+  })
+
+  test('écarte une route incomplète quand son avance ne couvre pas la pénalité', async ({ assert }) => {
+    const network = await seedNetwork('closed')
+    await seedStation({ name: 'Gare Est', networkId: network.id, points: [[4.05, 45.00005]] })
+    await seedStation({ name: 'Gare Ouest', networkId: network.id, points: [[4.25, 45.00005]] })
+
+    // Nationale à 40 min : la rapide incomplète (20 min + 60 min de
+    // pénalité au taux de 33 c/min) perd la comparaison.
+    const result = await new RouteOptimizer(new FakeDirections(), new RoutePricer()).optimize(
+      makeQuery(2000, 60)
+    )
+
+    assert.equal(result.best.kind, 'no-toll')
+    assert.isTrue(result.best.pricing.complete)
   })
 
   test('échoue explicitement quand aucun itinéraire n’existe', async ({ assert }) => {

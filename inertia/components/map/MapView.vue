@@ -5,6 +5,12 @@ import {storeToRefs} from "pinia";
 import {useLocationStore} from "~/composables/stores/useLocationStore";
 import useMapbox, {Feature} from "~/composables/map/useMapbox";
 import {RouteGeometry} from "~/composables/engine/useOptimizer";
+import {RouteVariantKey} from "~/components/sidebar/RouteSwitcher.vue";
+
+export type DisplayedRoute = {
+  key: RouteVariantKey;
+  geometry: RouteGeometry;
+};
 
 type TollFeature = {
   type: 'Feature';
@@ -25,7 +31,7 @@ let mapbox: Map;
 let startMarker: Marker;
 let endMarker: Marker;
 let tollFeatures: TollFeature[] = [];
-let routeCoords: [number, number][] | null = null;
+let routeCoordsList: [number, number][][] = [];
 const hasRoute = ref<boolean>(false);
 
 function toggleTolls() {
@@ -140,17 +146,40 @@ onMounted(() => {
       paint:  { 'line-color': '#94a3b8', 'line-width': 4 },
     }, 'tolls-layer');
 
-    // Route optimisée : tracée par-dessus la route initiale, sous les péages
-    mapbox.addSource('optimized-route', {type: 'geojson', data: { type: 'FeatureCollection', features: [] }});
+    // Les trois variantes de l'optimisation vivent dans une seule source ;
+    // la bascule d'onglet ne fait que changer les filtres des layers, sans
+    // re-charger de données ni bouger la caméra.
+    const variantColor = [
+      'match', ['get', 'variant'],
+      'fastest', '#94a3b8',
+      'no-toll', '#f59e0b',
+      '#3b82f6',
+    ] as const;
+    const variantCasing = [
+      'match', ['get', 'variant'],
+      'fastest', '#475569',
+      'no-toll', '#b45309',
+      '#1d4ed8',
+    ] as const;
+
+    mapbox.addSource('variant-routes', {type: 'geojson', data: { type: 'FeatureCollection', features: [] }});
     mapbox.addLayer({
-      id: 'optimized-route-casing', type: 'line', source: 'optimized-route',
+      id: 'variant-routes-dim', type: 'line', source: 'variant-routes',
+      filter: ['!=', ['get', 'variant'], 'best'],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint:  { 'line-color': '#1d4ed8', 'line-width': 7, 'line-opacity': 0.9 },
+      paint:  { 'line-color': [...variantColor], 'line-width': 3, 'line-opacity': 0.5 },
     }, 'tolls-layer');
     mapbox.addLayer({
-      id: 'optimized-route', type: 'line', source: 'optimized-route',
+      id: 'variant-route-active-casing', type: 'line', source: 'variant-routes',
+      filter: ['==', ['get', 'variant'], 'best'],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint:  { 'line-color': '#3b82f6', 'line-width': 4 },
+      paint:  { 'line-color': [...variantCasing], 'line-width': 7, 'line-opacity': 0.9 },
+    }, 'tolls-layer');
+    mapbox.addLayer({
+      id: 'variant-route-active', type: 'line', source: 'variant-routes',
+      filter: ['==', ['get', 'variant'], 'best'],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint:  { 'line-color': [...variantColor], 'line-width': 4 },
     }, 'tolls-layer');
 
     // Données chargées depuis la base via l'endpoint AdonisJS, conservées
@@ -194,7 +223,15 @@ async function drawRoute() {
       type: 'FeatureCollection',
       features: [{ type: 'Feature', geometry, properties: {} }],
     });
-    routeCoords = geometry.coordinates;
+    // Les variantes d'une optimisation précédente ne correspondent plus
+    // aux nouveaux marqueurs
+    if (mapbox.getSource('variant-routes')) {
+      (mapbox.getSource('variant-routes') as GeoJSONSource).setData({
+        type: 'FeatureCollection',
+        features: [],
+      });
+    }
+    routeCoordsList = [geometry.coordinates];
     hasRoute.value = true;
     applyTollFilter();
     mapbox.fitBounds([startMarker.getLngLat(), endMarker.getLngLat()], { padding: 60, maxZoom: 13, speed: 2 });
@@ -204,31 +241,46 @@ async function drawRoute() {
 }
 
 /**
- * Affiche les tracés issus de l'optimisation : la route la plus rapide en
- * gris (référence) et la variante active en bleu. Le filtre des péages
- * suit la variante active.
+ * Affiche simultanément les variantes issues de l'optimisation ; la
+ * variante active est mise en avant, les autres restent visibles en
+ * estompé. La caméra n'est recadrée qu'ici, jamais à la bascule.
  */
-function showResult(base: RouteGeometry, optimized: RouteGeometry) {
-  if (!mapbox.getSource('optimized-route')) return;
+function showRoutes(routes: DisplayedRoute[], active: RouteVariantKey) {
+  if (!mapbox.getSource('variant-routes')) return;
 
+  (mapbox.getSource('variant-routes') as GeoJSONSource).setData({
+    type: 'FeatureCollection',
+    features: routes.map((route) => ({
+      type: 'Feature',
+      geometry: route.geometry,
+      properties: { variant: route.key },
+    })),
+  });
+  // Le tracé de prévisualisation est remplacé par les variantes
   (mapbox.getSource('default-route') as GeoJSONSource).setData({
     type: 'FeatureCollection',
-    features: [{ type: 'Feature', geometry: base, properties: {} }],
-  });
-  (mapbox.getSource('optimized-route') as GeoJSONSource).setData({
-    type: 'FeatureCollection',
-    features: [{ type: 'Feature', geometry: optimized, properties: {} }],
+    features: [],
   });
 
-  routeCoords = optimized.coordinates;
+  routeCoordsList = routes.map((route) => route.geometry.coordinates);
   hasRoute.value = true;
   applyTollFilter();
+  setActiveVariant(active);
 
-  const bounds = optimized.coordinates.reduce(
+  const allCoords = routes.flatMap((route) => route.geometry.coordinates);
+  const bounds = allCoords.reduce(
     (box, coord) => box.extend(coord),
-    new LngLatBounds(optimized.coordinates[0], optimized.coordinates[0]),
+    new LngLatBounds(allCoords[0], allCoords[0]),
   );
   mapbox.fitBounds(bounds, { padding: 60, maxZoom: 13, speed: 2 });
+}
+
+/** Bascule instantanée de la variante mise en avant (simple filtre). */
+function setActiveVariant(active: RouteVariantKey) {
+  if (!mapbox.getLayer('variant-route-active')) return;
+  mapbox.setFilter('variant-routes-dim', ['!=', ['get', 'variant'], active]);
+  mapbox.setFilter('variant-route-active-casing', ['==', ['get', 'variant'], active]);
+  mapbox.setFilter('variant-route-active', ['==', ['get', 'variant'], active]);
 }
 
 /** Recentre la carte sur un point (péage cliqué dans le panneau). */
@@ -236,28 +288,30 @@ function focusPoint(center: [number, number]) {
   mapbox.flyTo({ center, zoom: 13 });
 }
 
-defineExpose({ showResult, focusPoint });
+defineExpose({ showRoutes, setActiveVariant, focusPoint });
 
 /**
- * Restreint la layer des péages à ceux situés le long de la route affichée.
- * Sans route, tous les péages sont visibles.
+ * Restreint la layer des péages à ceux situés le long des routes affichées
+ * (union des variantes). Sans route, tous les péages sont visibles.
  */
 function applyTollFilter() {
   if (!mapbox.getLayer('tolls-layer')) return;
 
-  if (!routeCoords || !tollFeatures.length) {
+  if (routeCoordsList.length === 0 || !tollFeatures.length) {
     mapbox.setFilter('tolls-layer', null);
     return;
   }
 
-  // Bounding box de la route élargie du seuil, pour écarter à moindre coût
+  // Bounding box des routes élargie du seuil, pour écarter à moindre coût
   // les péages manifestement trop éloignés
   let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
-  for (const [lng, lat] of routeCoords) {
-    if (lng < minLng) minLng = lng;
-    if (lng > maxLng) maxLng = lng;
-    if (lat < minLat) minLat = lat;
-    if (lat > maxLat) maxLat = lat;
+  for (const coords of routeCoordsList) {
+    for (const [lng, lat] of coords) {
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+    }
   }
   const latMargin = TOLL_ROUTE_THRESHOLD_M / 111_320;
   const lngMargin = latMargin / Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
@@ -267,7 +321,8 @@ function applyTollFilter() {
       const [lng, lat] = f.geometry.coordinates;
       if (lng < minLng - lngMargin || lng > maxLng + lngMargin) return false;
       if (lat < minLat - latMargin || lat > maxLat + latMargin) return false;
-      return isNearPolyline(lng, lat, routeCoords!, TOLL_ROUTE_THRESHOLD_M);
+      return routeCoordsList.some((coords) =>
+        isNearPolyline(lng, lat, coords, TOLL_ROUTE_THRESHOLD_M));
     })
     .map((f) => f.properties.id);
 

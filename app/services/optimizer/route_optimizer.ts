@@ -37,6 +37,17 @@ const CORRIDOR_SCAN_METERS = 600
 const CORRIDOR_MARGIN_METERS = 1000
 
 /**
+ * Pénalité pessimiste par franchissement intarifable (réseau non couvert,
+ * prix absent…) dans la comparaison des routes : faute de prix, on prête à
+ * chaque anomalie le coût d'une longue section française plutôt que
+ * d'écarter la candidate. Une route incomplète n'est donc retenue que si
+ * son avance survit à cette hypothèse défavorable — Rennes→Bilbao garde sa
+ * route rapide (4 h d'avance, 4 barrières inconnues) au lieu de basculer
+ * sur un immense détour sans péage.
+ */
+const UNPRICEABLE_CROSSING_PENALTY_CENTS = 2000
+
+/**
  * Points exclus par gare du couloir : le plus souvent une gare de bretelle
  * a une plateforme d'entrée et une de sortie — deux points suffisent à la
  * condamner sans épuiser la limite Mapbox sur les longs tronçons.
@@ -85,6 +96,35 @@ export type EvaluatedRouteSummary = {
   excludedStations: string[]
 }
 
+/**
+ * Analyse de rentabilité d'un tronçon de péage de la route rapide : ce que
+ * son évitement coûte en temps et rapporte en euros (route d'évitement
+ * re-tarifée entièrement, pas une simple soustraction du prix du tronçon).
+ */
+export type SectionDecision = {
+  /** Clé stable du tronçon : `entryStationId:exitStationId` (ou `open`). */
+  sectionKey: string
+  entryStationName: string
+  exitStationName: string | null
+  networkName: string
+  priceCents: number
+
+  /** Temps perdu si on évite ce tronçon (null : aucune alternative trouvée). */
+  extraDurationSeconds: number | null
+
+  /** Économie réelle sur la route d'évitement re-tarifée. */
+  savedCents: number | null
+
+  /** Prix payé par heure gagnée en gardant le péage (0 : l'éviter est gratuit). */
+  ratioCentsPerHour: number | null
+
+  /** false si l'une des deux routes comparées a une tarification incomplète. */
+  reliable: boolean
+
+  /** Le tronçon est-il emprunté par la route recommandée ? */
+  keptInBest: boolean
+}
+
 export type OptimizeResult = {
   /** Seuil de rentabilité dérivé de la requête, en centimes par minute. */
   rhoCentsPerMinute: number
@@ -99,7 +139,15 @@ export type OptimizeResult = {
   /** Toutes les routes évaluées, résumées, triées par score croissant. */
   evaluated: EvaluatedRouteSummary[]
 
+  /** Rentabilité de chaque tronçon payant de la route rapide. */
+  decisions: SectionDecision[]
+
   warnings: string[]
+}
+
+/** Clé stable d'un tronçon, partagée avec le front pour croiser les données. */
+export function sectionKey(section: RouteTollSection): string {
+  return `${section.entry.stationId}:${section.exit?.stationId ?? 'open'}`
 }
 
 /** Aucun itinéraire entre le départ et l'arrivée. */
@@ -153,18 +201,18 @@ export default class RouteOptimizer {
         : null
     if (noToll) evaluated.push(noToll)
 
-    await this.runGreedy(fastest, rho, query, evaluated, warnings)
+    const decisions = await this.runGreedy(fastest, rho, query, evaluated, warnings)
 
-    // Une tarification incomplète sous-estime le prix : une telle route ne
-    // peut pas être recommandée, sauf si aucune candidate n'est fiable.
-    const reliable = evaluated.filter((route) => route.pricing.complete)
-    const pool = reliable.length > 0 ? reliable : evaluated
-    if (reliable.length === 0) {
-      warnings.push('Aucune candidate à la tarification complète : recommandation à vérifier')
-    }
-    const best = pool.reduce((winner, route) =>
-      route.scoreMinutes < winner.scoreMinutes ? route : winner
+    const best = evaluated.reduce((winner, route) =>
+      this.pessimisticScore(route, rho) < this.pessimisticScore(winner, rho) ? route : winner
     )
+    if (!best.pricing.complete) {
+      warnings.push(
+        'La route recommandée franchit des péages non chiffrés : son prix réel est sous-estimé'
+      )
+    }
+
+    const keptKeys = new Set(best.pricing.sections.map((section) => sectionKey(section)))
 
     return {
       rhoCentsPerMinute: rho,
@@ -174,6 +222,10 @@ export default class RouteOptimizer {
       evaluated: evaluated
         .map((route) => this.summarize(route))
         .sort((a, b) => a.scoreMinutes - b.scoreMinutes),
+      decisions: decisions.map((decision) => ({
+        ...decision,
+        keptInBest: keptKeys.has(decision.sectionKey),
+      })),
       warnings,
     }
   }
@@ -181,7 +233,9 @@ export default class RouteOptimizer {
   /**
    * Boucle de retraits : part de la route rapide et retire un tronçon par
    * itération tant que le score s'améliore. Les candidates évaluées (même
-   * non adoptées) sont ajoutées à `evaluated`.
+   * non adoptées) sont ajoutées à `evaluated`. Renvoie l'analyse de
+   * rentabilité de chaque tronçon de la route rapide, tirée de la première
+   * itération — celle où chaque évitement est comparé à la route rapide.
    */
   private async runGreedy(
     fastest: EvaluatedRoute,
@@ -189,10 +243,11 @@ export default class RouteOptimizer {
     query: OptimizeQuery,
     evaluated: EvaluatedRoute[],
     warnings: string[]
-  ): Promise<void> {
+  ): Promise<Omit<SectionDecision, 'keptInBest'>[]> {
     let current = fastest
     let exclusions: Exclusions = { points: [], stations: [] }
     const attempted = new Set<string>()
+    const decisions: Omit<SectionDecision, 'keptInBest'>[] = []
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       const removable = current.pricing.sections.filter(
@@ -204,41 +259,120 @@ export default class RouteOptimizer {
 
       const candidates: Array<{ route: EvaluatedRoute; exclusions: Exclusions }> = []
       for (const section of removable) {
-        const extended = this.extendExclusions(exclusions, section, corridor, warnings)
-        if (!extended) continue
+        const candidate = await this.tryRemoveSection(
+          section,
+          exclusions,
+          corridor,
+          attempted,
+          rho,
+          query,
+          warnings
+        )
 
-        const key = extended.points
-          .map(([lng, lat]) => `${lng},${lat}`)
-          .sort()
-          .join(';')
-        if (attempted.has(key)) continue
-        attempted.add(key)
-
-        const routes = await this.directions.fetchRoutes(query.start, query.end, {
-          excludePoints: extended.points,
-        })
-        if (routes.length === 0) continue
-
-        const route = await this.evaluate(routes[0], 'hybrid', extended.stations, rho, query)
-        evaluated.push(route)
-        // Un score fondé sur un prix incomplet n'est pas comparable : la
-        // candidate reste visible dans `evaluated` mais n'est pas adoptée.
-        if (route.pricing.complete) {
-          candidates.push({ route, exclusions: extended })
+        if (iteration === 0) {
+          decisions.push(this.decideSection(section, fastest, candidate?.route ?? null))
         }
+        if (!candidate) continue
+
+        evaluated.push(candidate.route)
+        candidates.push(candidate)
       }
 
+      // Comparaison au score pessimiste : une candidate incomplète n'est
+      // adoptée que si son avance couvre la pénalité de ses inconnues.
       const bestCandidate = candidates.reduce<(typeof candidates)[number] | null>(
         (winner, candidate) =>
-          winner === null || candidate.route.scoreMinutes < winner.route.scoreMinutes
+          winner === null ||
+          this.pessimisticScore(candidate.route, rho) < this.pessimisticScore(winner.route, rho)
             ? candidate
             : winner,
         null
       )
-      if (!bestCandidate || bestCandidate.route.scoreMinutes >= current.scoreMinutes) break
+      if (
+        !bestCandidate ||
+        this.pessimisticScore(bestCandidate.route, rho) >= this.pessimisticScore(current, rho)
+      ) {
+        break
+      }
 
       current = bestCandidate.route
       exclusions = bestCandidate.exclusions
+    }
+
+    return decisions
+  }
+
+  /**
+   * Tente la route évitant le couloir d'un tronçon. Renvoie null si rien de
+   * nouveau ne peut être exclu, si ce jeu d'exclusions a déjà été essayé, ou
+   * si Mapbox ne trouve pas de route.
+   */
+  private async tryRemoveSection(
+    section: RouteTollSection,
+    exclusions: Exclusions,
+    corridor: CrossedStation[],
+    attempted: Set<string>,
+    rho: number,
+    query: OptimizeQuery,
+    warnings: string[]
+  ): Promise<{ route: EvaluatedRoute; exclusions: Exclusions } | null> {
+    const extended = this.extendExclusions(exclusions, section, corridor, warnings)
+    if (!extended) return null
+
+    const key = extended.points
+      .map(([lng, lat]) => `${lng},${lat}`)
+      .sort()
+      .join(';')
+    if (attempted.has(key)) return null
+    attempted.add(key)
+
+    const routes = await this.directions.fetchRoutes(query.start, query.end, {
+      excludePoints: extended.points,
+    })
+    if (routes.length === 0) return null
+
+    const route = await this.evaluate(routes[0], 'hybrid', extended.stations, rho, query)
+    return { route, exclusions: extended }
+  }
+
+  /**
+   * Chiffre l'évitement d'un tronçon de la route rapide : surcoût en temps,
+   * économie re-tarifée, et prix payé par heure gagnée en le gardant.
+   */
+  private decideSection(
+    section: RouteTollSection,
+    fastest: EvaluatedRoute,
+    avoiding: EvaluatedRoute | null
+  ): Omit<SectionDecision, 'keptInBest'> {
+    const base = {
+      sectionKey: sectionKey(section),
+      entryStationName: section.entry.stationName,
+      exitStationName: section.exit?.stationName ?? null,
+      networkName: section.networkName,
+      priceCents: section.priceCents ?? 0,
+    }
+
+    if (!avoiding) {
+      return {
+        ...base,
+        extraDurationSeconds: null,
+        savedCents: null,
+        ratioCentsPerHour: null,
+        reliable: false,
+      }
+    }
+
+    const extraDurationSeconds = avoiding.durationSeconds - fastest.durationSeconds
+    const savedCents = fastest.pricing.totalCents - avoiding.pricing.totalCents
+    return {
+      ...base,
+      extraDurationSeconds,
+      savedCents,
+      ratioCentsPerHour:
+        extraDurationSeconds > 0
+          ? Math.round(savedCents / (extraDurationSeconds / 3600))
+          : 0,
+      reliable: fastest.pricing.complete && avoiding.pricing.complete,
     }
   }
 
@@ -320,6 +454,11 @@ export default class RouteOptimizer {
       scoreMinutes: route.duration / 60 + pricing.totalCents / rho,
       excludedStations,
     }
+  }
+
+  /** Score augmenté de la pénalité pessimiste des franchissements intarifables. */
+  private pessimisticScore(route: EvaluatedRoute, rho: number): number {
+    return route.scoreMinutes + (route.pricing.issues.length * UNPRICEABLE_CROSSING_PENALTY_CENTS) / rho
   }
 
   private summarize(route: EvaluatedRoute): EvaluatedRouteSummary {

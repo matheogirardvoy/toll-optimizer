@@ -37,8 +37,14 @@ export async function seedStation(options: {
   name: string
   networkId: number | null
   points: Array<[number, number]>
+  /** 'Ech' (échangeur) ou 'Bpv' (barrière pleine voie), comme le référentiel. */
+  gateType?: string
 }): Promise<TollStation> {
-  const station = await TollStation.create({ name: options.name, networkId: options.networkId })
+  const station = await TollStation.create({
+    name: options.name,
+    networkId: options.networkId,
+    gateType: options.gateType ?? null,
+  })
   for (const [longitude, latitude] of options.points) {
     await Toll.create({
       name: options.name,

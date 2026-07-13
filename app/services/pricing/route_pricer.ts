@@ -30,6 +30,17 @@ const DEFAULT_MATCH_THRESHOLD_METERS = 10
  */
 const CROSSING_WINDOW_METERS = 500
 
+/**
+ * Réparation des orphelins : une gare de bretelle réellement empruntée peut
+ * projeter à 15-35 m du tracé Mapbox (géométrie de bretelle simplifiée —
+ * constaté sur le complexe La Côtière/La Boisse de l'A42). Quand une entrée
+ * reste sans sortie, on cherche la gare manquée parmi celles frôlées à
+ * moins de `RESCUE_SCAN_METERS`, à moins de `RESCUE_RANGE_METERS` le long
+ * du tracé ; l'existence du couple dans la grille sert de garde-fou.
+ */
+const RESCUE_SCAN_METERS = 60
+const RESCUE_RANGE_METERS = 30_000
+
 export type RouteLineString = {
   type: 'LineString'
   coordinates: LngLat[]
@@ -118,6 +129,12 @@ type UnpricedSection = {
   exit: Crossing | null
 }
 
+/** Franchissement resté sans sortie après appariement d'un bloc fermé. */
+type OrphanCrossing = {
+  network: TollNetwork
+  crossing: Crossing
+}
+
 /**
  * Tarife un itinéraire : détecte les gares de péage franchies par le tracé,
  * les reconstitue en sections tarifaires (couple entrée/sortie en système
@@ -139,8 +156,12 @@ export default class RoutePricer {
     const threshold = query.matchThresholdMeters ?? DEFAULT_MATCH_THRESHOLD_METERS
     const matches = await this.matchTolls(line, threshold)
     const crossings = this.groupIntoCrossings(matches)
-    const { sections, issues } = this.pairCrossings(crossings)
-    const pricedSections = await this.priceSections(sections, issues, query)
+    const { sections, orphans, issues } = this.pairCrossings(crossings)
+
+    const { rescued, remaining } = await this.rescueOrphans(orphans, crossings, line, threshold, query)
+    sections.push(...rescued)
+
+    const pricedSections = await this.priceSections(sections, remaining, issues, query)
 
     return {
       totalCents: pricedSections.reduce((sum, section) => sum + (section.priceCents ?? 0), 0),
@@ -231,21 +252,22 @@ export default class RoutePricer {
   /**
    * Reconstitue les sections tarifaires à partir des franchissements
    * ordonnés. Système ouvert : chaque franchissement est une section à prix
-   * fixe. Système fermé : les franchissements consécutifs d'un même réseau
-   * sont appariés deux à deux (entrée puis sortie).
-   *
-   * Limite connue de cet appariement : une BPV intermédiaire franchie au
-   * milieu d'un trajet payant du même réseau serait prise pour une sortie.
-   * Si le cas apparaît dans les données, affiner ici avec `gateType`
-   * (une gare `Ech` est forcément une vraie entrée/sortie de bretelle).
+   * fixe. Système fermé : les franchissements sont regroupés en blocs
+   * contigus d'un même réseau (les gares sans réseau ou en système ouvert
+   * ne scindent pas un bloc), appariés par `pairBlock`.
    */
   private pairCrossings(crossings: Crossing[]): {
     sections: UnpricedSection[]
+    orphans: OrphanCrossing[]
     issues: RoutePricingIssue[]
   } {
     const sections: UnpricedSection[] = []
+    const orphans: OrphanCrossing[] = []
     const issues: RoutePricingIssue[] = []
-    const pendingEntries = new Map<number, Crossing>()
+
+    type Block = { network: TollNetwork; crossings: Crossing[] }
+    const blocks: Block[] = []
+    let openBlock: Block | null = null
 
     for (const crossing of crossings) {
       const network = crossing.network
@@ -259,63 +281,238 @@ export default class RoutePricer {
         continue
       }
 
-      const pending = pendingEntries.get(network.id)
-      if (pending) {
-        sections.push({ network, entry: pending, exit: crossing })
-        pendingEntries.delete(network.id)
+      if (openBlock && openBlock.network.id === network.id) {
+        openBlock.crossings.push(crossing)
       } else {
-        pendingEntries.set(network.id, crossing)
+        openBlock = { network, crossings: [crossing] }
+        blocks.push(openBlock)
       }
     }
 
-    for (const pending of pendingEntries.values()) {
-      issues.push({
-        type: 'unpaired-entry',
-        station: this.describeCrossing(pending),
-        networkName: pending.network?.name ?? '',
-      })
+    for (const block of blocks) {
+      this.pairBlock(block.network, block.crossings, sections, orphans)
     }
 
-    return { sections, issues }
+    return { sections, orphans, issues }
   }
 
-  private async priceSections(
+  /**
+   * Appariement d'un bloc de franchissements d'un même réseau fermé : la
+   * section court de la première gare jusqu'à une gare d'échangeur (`Ech`)
+   * ou jusqu'à la dernière gare du bloc. Une bretelle franchie est
+   * forcément une vraie entrée/sortie ; une barrière pleine voie (`Bpv`)
+   * intermédiaire, elle, se franchit ticket en main sans clore le trajet —
+   * quand ce n'est pas un point du référentiel côtoyé sans être franchi
+   * (Pouilly-en-Auxois sur l'A6, à 0 m de la voie sud). Une gare de type
+   * inconnu est traitée comme un échangeur (comportement conservateur).
+   */
+  private pairBlock(
+    network: TollNetwork,
+    crossings: Crossing[],
     sections: UnpricedSection[],
-    issues: RoutePricingIssue[],
+    orphans: OrphanCrossing[]
+  ): void {
+    let pending: Crossing | null = null
+    const lastIndex = crossings.length - 1
+
+    for (let index = 0; index <= lastIndex; index++) {
+      const crossing = crossings[index]
+      if (!pending) {
+        pending = crossing
+        continue
+      }
+
+      const closesSection = crossing.station.gateType !== 'Bpv' || index === lastIndex
+      if (closesSection) {
+        sections.push({ network, entry: pending, exit: crossing })
+        pending = null
+      }
+    }
+
+    // Le sort du franchissement resté seul se joue à la tarification : s'il
+    // a un prix « franchissement seul », c'était une barrière à prix fixe.
+    if (pending) {
+      orphans.push({ network, crossing: pending })
+    }
+  }
+
+  /**
+   * Tente d'apparier chaque orphelin avec une gare du même réseau frôlée
+   * par le tracé sans avoir été matchée (bretelle à 15-60 m). Le couple
+   * n'est retenu que si la grille le tarife — une gare voisine non
+   * empruntée ne produit pas de couple commercial plausible dans ce sens.
+   */
+  private async rescueOrphans(
+    orphans: OrphanCrossing[],
+    strictCrossings: Crossing[],
+    line: LngLat[],
+    strictThreshold: number,
     query: RoutePricingQuery
-  ): Promise<RouteTollSection[]> {
-    const priced = await Promise.all(
-      sections.map(async (section): Promise<RouteTollSection> => {
+  ): Promise<{ rescued: UnpricedSection[]; remaining: OrphanCrossing[] }> {
+    if (orphans.length === 0) {
+      return { rescued: [], remaining: [] }
+    }
+
+    const strictStationIds = new Set(strictCrossings.map((crossing) => crossing.station.id))
+    const nearMisses = this.groupIntoCrossings(
+      (await this.matchTolls(line, RESCUE_SCAN_METERS)).filter(
+        (match) =>
+          match.distanceMeters > strictThreshold && !strictStationIds.has(match.station.id)
+      )
+    )
+
+    const rescued: UnpricedSection[] = []
+    const remaining: OrphanCrossing[] = []
+
+    for (const orphan of orphans) {
+      const candidates = nearMisses
+        .filter(
+          (candidate) =>
+            candidate.network?.id === orphan.network.id &&
+            Math.abs(candidate.alongMeters - orphan.crossing.alongMeters) <= RESCUE_RANGE_METERS
+        )
+        .sort(
+          (a, b) =>
+            Math.abs(a.alongMeters - orphan.crossing.alongMeters) -
+            Math.abs(b.alongMeters - orphan.crossing.alongMeters)
+        )
+
+      let section: UnpricedSection | null = null
+      for (const candidate of candidates) {
+        const downstream = candidate.alongMeters >= orphan.crossing.alongMeters
+        const entry = downstream ? orphan.crossing : candidate
+        const exit = downstream ? candidate : orphan.crossing
+
         const price = await this.priceLookup.forTraversal({
-          entryStationId: section.entry.station.id,
-          exitStationId: section.exit?.station.id ?? null,
+          entryStationId: entry.station.id,
+          exitStationId: exit.station.id,
           vehicleClass: query.vehicleClass,
           date: query.date,
         })
-
-        return {
-          networkId: section.network.id,
-          networkName: section.network.name,
-          pricingMode: section.network.pricingMode,
-          entry: this.describeCrossing(section.entry),
-          exit: section.exit ? this.describeCrossing(section.exit) : null,
-          priceCents: price?.priceCents ?? null,
+        if (price !== null) {
+          section = { network: orphan.network, entry, exit }
+          break
         }
-      })
-    )
+      }
 
-    for (const section of priced) {
-      if (section.priceCents === null) {
+      if (section) {
+        rescued.push(section)
+      } else {
+        remaining.push(orphan)
+      }
+    }
+
+    return { rescued, remaining }
+  }
+
+  /**
+   * Tarife les sections appariées et les franchissements orphelins.
+   *
+   * Repli « franchissement seul » : les grilles publient un prix fixe
+   * (sortie nulle) pour les barrières traversables hors système fermé.
+   * Un orphelin qui possède un tel prix était donc une barrière à prix
+   * fixe, pas une entrée restée sans sortie ; et un couple absent de la
+   * grille dont les deux gares ont chacune leur prix fixe était en réalité
+   * deux barrières indépendantes (Le Crozet puis Voreppe sur A49/A48), pas
+   * un trajet fermé.
+   */
+  private async priceSections(
+    sections: UnpricedSection[],
+    orphans: OrphanCrossing[],
+    issues: RoutePricingIssue[],
+    query: RoutePricingQuery
+  ): Promise<RouteTollSection[]> {
+    const priced: RouteTollSection[] = []
+
+    const lookup = (entryStationId: number, exitStationId: number | null) =>
+      this.priceLookup.forTraversal({
+        entryStationId,
+        exitStationId,
+        vehicleClass: query.vehicleClass,
+        date: query.date,
+      })
+
+    for (const section of sections) {
+      const price = await lookup(section.entry.station.id, section.exit?.station.id ?? null)
+      if (price !== null || section.exit === null) {
+        priced.push(this.describeSection(section.network, section.entry, section.exit, price))
+        if (price === null) {
+          issues.push({
+            type: 'missing-price',
+            networkName: section.network.name,
+            entry: this.describeCrossing(section.entry),
+            exit: section.exit ? this.describeCrossing(section.exit) : null,
+          })
+        }
+        continue
+      }
+
+      // Couple fermé absent de la grille : chaque extrémité tente son prix
+      // de franchissement seul ; celle qui n'en a pas redevient orpheline.
+      const [entryBarrier, exitBarrier] = await Promise.all([
+        lookup(section.entry.station.id, null),
+        lookup(section.exit.station.id, null),
+      ])
+
+      if (entryBarrier === null && exitBarrier === null) {
+        priced.push(this.describeSection(section.network, section.entry, section.exit, null))
         issues.push({
           type: 'missing-price',
-          networkName: section.networkName,
-          entry: section.entry,
-          exit: section.exit,
+          networkName: section.network.name,
+          entry: this.describeCrossing(section.entry),
+          exit: this.describeCrossing(section.exit),
+        })
+        continue
+      }
+
+      for (const [crossing, barrier] of [
+        [section.entry, entryBarrier],
+        [section.exit, exitBarrier],
+      ] as const) {
+        if (barrier !== null) {
+          priced.push(this.describeSection(section.network, crossing, null, barrier))
+        } else {
+          issues.push({
+            type: 'unpaired-entry',
+            station: this.describeCrossing(crossing),
+            networkName: section.network.name,
+          })
+        }
+      }
+    }
+
+    for (const orphan of orphans) {
+      const barrier = await lookup(orphan.crossing.station.id, null)
+      if (barrier !== null) {
+        priced.push(this.describeSection(orphan.network, orphan.crossing, null, barrier))
+      } else {
+        issues.push({
+          type: 'unpaired-entry',
+          station: this.describeCrossing(orphan.crossing),
+          networkName: orphan.network.name,
         })
       }
     }
 
     return priced.sort((a, b) => a.entry.alongMeters - b.entry.alongMeters)
+  }
+
+  private describeSection(
+    network: TollNetwork,
+    entry: Crossing,
+    exit: Crossing | null,
+    price: { priceCents: number } | null
+  ): RouteTollSection {
+    return {
+      networkId: network.id,
+      networkName: network.name,
+      // Une section sans sortie est tarifée au franchissement (prix fixe),
+      // quel que soit le mode nominal du réseau.
+      pricingMode: exit === null ? 'open' : network.pricingMode,
+      entry: this.describeCrossing(entry),
+      exit: exit ? this.describeCrossing(exit) : null,
+      priceCents: price?.priceCents ?? null,
+    }
   }
 
   private describeCrossing(crossing: Crossing): CrossedStation {

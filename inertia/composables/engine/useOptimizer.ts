@@ -70,12 +70,32 @@ export type EvaluatedRouteSummary = {
     excludedStations: string[];
 };
 
+/**
+ * Rentabilité d'un tronçon payant de la route rapide : ce que son évitement
+ * coûte en temps et rapporte en euros (route d'évitement re-tarifée).
+ */
+export type SectionDecision = {
+    /** Clé stable du tronçon : `entryStationId:exitStationId` (ou `open`). */
+    sectionKey: string;
+    entryStationName: string;
+    exitStationName: string | null;
+    networkName: string;
+    priceCents: number;
+    extraDurationSeconds: number | null;
+    savedCents: number | null;
+    /** Prix payé par heure gagnée en gardant le péage (0 : l'éviter est gratuit). */
+    ratioCentsPerHour: number | null;
+    reliable: boolean;
+    keptInBest: boolean;
+};
+
 export type OptimizeResult = {
     rhoCentsPerMinute: number;
     best: EvaluatedRoute;
     fastest: EvaluatedRoute;
     noToll: EvaluatedRoute | null;
     evaluated: EvaluatedRouteSummary[];
+    decisions: SectionDecision[];
     warnings: string[];
 };
 
