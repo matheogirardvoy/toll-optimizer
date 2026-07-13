@@ -31,6 +31,18 @@ export interface Registry {
       errorResponse: ExtractErrorResponse<Awaited<ReturnType<import('#controllers/admin/tolls_controller').default['geojson']>>>
     }
   }
+  'api.tolls.match': {
+    methods: ["POST"]
+    pattern: '/api/tolls/match'
+    types: {
+      body: ExtractBody<InferInput<(typeof import('#validators/tolls').matchTollsValidator)>>
+      paramsTuple: []
+      params: {}
+      query: ExtractQuery<InferInput<(typeof import('#validators/tolls').matchTollsValidator)>>
+      response: ExtractResponse<Awaited<ReturnType<import('#controllers/admin/tolls_controller').default['match']>>>
+      errorResponse: ExtractErrorResponse<Awaited<ReturnType<import('#controllers/admin/tolls_controller').default['match']>>> | { status: 422; response: { errors: SimpleError[] } }
+    }
+  }
   'api.optimize': {
     methods: ["POST"]
     pattern: '/api/optimize'

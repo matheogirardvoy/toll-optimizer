@@ -22,6 +22,9 @@ router.on('/').renderInertia('home', {}).as('home')
 // Endpoint public consommé par la carte Mapbox
 router.get('api/tolls.geojson', [TollsController, 'geojson']).as('api.tolls')
 
+// Enrichit les péages signalés par Mapbox avec le référentiel local
+router.post('api/tolls/match', [TollsController, 'match']).as('api.tolls.match')
+
 // Optimisation d'itinéraire péages/sans-péages
 router.post('api/optimize', [OptimizeController, 'store']).as('api.optimize')
 

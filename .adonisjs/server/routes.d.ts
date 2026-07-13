@@ -6,6 +6,7 @@ export type ScannedRoutes = {
   ALL: {
     'home': { paramsTuple?: []; params?: {} }
     'api.tolls': { paramsTuple?: []; params?: {} }
+    'api.tolls.match': { paramsTuple?: []; params?: {} }
     'api.optimize': { paramsTuple?: []; params?: {} }
     'admin.login': { paramsTuple?: []; params?: {} }
     'admin.login.store': { paramsTuple?: []; params?: {} }
@@ -40,6 +41,7 @@ export type ScannedRoutes = {
     'admin.stations.show': { paramsTuple: [ParamValue]; params: {'id': ParamValue} }
   }
   POST: {
+    'api.tolls.match': { paramsTuple?: []; params?: {} }
     'api.optimize': { paramsTuple?: []; params?: {} }
     'admin.login.store': { paramsTuple?: []; params?: {} }
     'admin.logout': { paramsTuple?: []; params?: {} }

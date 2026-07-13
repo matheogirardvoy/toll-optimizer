@@ -3,23 +3,184 @@ import {onMounted, ref, watch} from "vue";
 import {GeoJSONSource, LngLatBounds, Map, Marker, NavigationControl, Popup, ScaleControl} from "mapbox-gl";
 import {storeToRefs} from "pinia";
 import {useLocationStore} from "~/composables/stores/useLocationStore";
-import useMapbox, {Feature} from "~/composables/map/useMapbox";
-import {RouteGeometry} from "~/composables/engine/useOptimizer";
+import useMapbox, {Feature, RouteTollCollection} from "~/composables/map/useMapbox";
+import useTolls from "~/composables/engine/useTolls";
+import {LngLat, MapboxToll, RouteGeometry, RouteTollSection, TollMatch} from "~/composables/engine/useOptimizer";
 import {RouteVariantKey} from "~/components/sidebar/RouteSwitcher.vue";
 
 export type DisplayedRoute = {
   key: RouteVariantKey;
   geometry: RouteGeometry;
+  /** Péages signalés par Mapbox sur cette variante, enrichis côté serveur. */
+  tolls: MapboxToll[];
+  /** Sections tarifées de cette variante (pricing serveur). */
+  sections: RouteTollSection[];
+};
+
+/** Propriétés plates : les sources GeoJSON Mapbox aplatissent les objets imbriqués. */
+type TollProperties = {
+  /** Nom affiché : référentiel local, sinon nom Mapbox, sinon « Péage ». */
+  name: string;
+  /** false : signalé par Mapbox mais introuvable dans la base. */
+  matched: boolean;
+  type: string | null;
+  road: string | null;
+  side: string | null;
+  laneCount: number | null;
+  stationName: string | null;
+  networkName: string | null;
 };
 
 type TollFeature = {
   type: 'Feature';
   geometry: {type: 'Point'; coordinates: [number, number]};
-  properties: Record<string, any>;
+  properties: TollProperties;
 };
 
-// Distance max (en mètres) entre un péage et la route pour le considérer "sur la route"
-const TOLL_ROUTE_THRESHOLD_M = 500;
+/** Libellés des types de perception annotés par Mapbox. */
+const TOLL_KIND_LABELS: Record<string, string> = {
+  toll_booth: 'Gare de péage',
+  toll_gantry: 'Portique flux libre',
+};
+
+/** Propriétés d'une portion payante (ligne survolable + étiquette de prix). */
+type SectionProperties = {
+  variant: RouteVariantKey;
+  /** 'portion' : couple entrée → sortie ; 'gare' : barrière à prix fixe. */
+  kind: 'portion' | 'gare';
+  name: string;
+  networkName: string;
+  /** Étiquette posée sur la carte : « 12,30 € » ou « ? ». */
+  label: string;
+  /** Prix affiché dans la popup : « 12,30 € » ou « non chiffré ». */
+  priceLabel: string;
+};
+
+type SectionFeature = {
+  type: 'Feature';
+  geometry:
+    | {type: 'LineString'; coordinates: LngLat[]}
+    | {type: 'Point'; coordinates: LngLat};
+  properties: SectionProperties;
+};
+
+/**
+ * ~2πR/360 sur le sphéroïde du serveur : les abscisses curvilignes des
+ * sections (`alongMeters`) sont recalculées ici avec la même métrique.
+ */
+const METERS_PER_DEGREE_LAT = 111_195;
+
+function euros(cents: number): string {
+  return `${(cents / 100).toFixed(2).replace('.', ',')} €`;
+}
+
+/** Distance cumulée le long du tracé, en mètres (projection locale). */
+function cumulativeMeters(coords: LngLat[]): number[] {
+  const cumulative = new Array<number>(coords.length);
+  let total = 0;
+  for (let i = 0; i < coords.length; i++) {
+    if (i > 0) {
+      const [lng1, lat1] = coords[i - 1];
+      const [lng2, lat2] = coords[i];
+      const meanLat = ((lat1 + lat2) / 2) * Math.PI / 180;
+      const dx = (lng2 - lng1) * METERS_PER_DEGREE_LAT * Math.cos(meanLat);
+      const dy = (lat2 - lat1) * METERS_PER_DEGREE_LAT;
+      total += Math.hypot(dx, dy);
+    }
+    cumulative[i] = total;
+  }
+  return cumulative;
+}
+
+/** Point du tracé à l'abscisse curviligne donnée (interpolation linéaire). */
+function pointAt(coords: LngLat[], cumulative: number[], meters: number): LngLat {
+  if (meters <= 0) return coords[0];
+  const total = cumulative[cumulative.length - 1];
+  if (meters >= total) return coords[coords.length - 1];
+
+  let i = 1;
+  while (cumulative[i] < meters) i++;
+  const t = (meters - cumulative[i - 1]) / ((cumulative[i] - cumulative[i - 1]) || 1);
+  return [
+    coords[i - 1][0] + t * (coords[i][0] - coords[i - 1][0]),
+    coords[i - 1][1] + t * (coords[i][1] - coords[i - 1][1]),
+  ];
+}
+
+/** Tronçon du tracé entre deux abscisses curvilignes, extrémités interpolées. */
+function sliceLine(coords: LngLat[], cumulative: number[], from: number, to: number): LngLat[] {
+  const middle = coords.filter((_, i) => cumulative[i] > from && cumulative[i] < to);
+  return [pointAt(coords, cumulative, from), ...middle, pointAt(coords, cumulative, to)];
+}
+
+/**
+ * Features d'une variante : pour chaque portion fermée, la sous-polyligne
+ * entrée → sortie (survolable) et un point médian portant l'étiquette de
+ * prix ; pour une barrière à prix fixe, la seule étiquette sur la gare.
+ */
+function sectionFeatures(route: DisplayedRoute): SectionFeature[] {
+  const coords = route.geometry.coordinates;
+  const cumulative = cumulativeMeters(coords);
+  const features: SectionFeature[] = [];
+
+  for (const section of route.sections) {
+    const properties: SectionProperties = {
+      variant: route.key,
+      kind: section.exit ? 'portion' : 'gare',
+      name: section.exit
+        ? `${section.entry.stationName} → ${section.exit.stationName}`
+        : section.entry.stationName,
+      networkName: section.networkName,
+      label: section.priceCents !== null ? euros(section.priceCents) : '?',
+      priceLabel: section.priceCents !== null ? euros(section.priceCents) : 'non chiffré',
+    };
+
+    if (section.exit) {
+      const from = section.entry.alongMeters;
+      const to = section.exit.alongMeters;
+      features.push({
+        type: 'Feature',
+        geometry: {type: 'LineString', coordinates: sliceLine(coords, cumulative, from, to)},
+        properties,
+      });
+      features.push({
+        type: 'Feature',
+        geometry: {type: 'Point', coordinates: pointAt(coords, cumulative, (from + to) / 2)},
+        properties,
+      });
+    } else {
+      features.push({
+        type: 'Feature',
+        geometry: {type: 'Point', coordinates: pointAt(coords, cumulative, section.entry.alongMeters)},
+        properties,
+      });
+    }
+  }
+
+  return features;
+}
+
+function buildSectionCard(p: SectionProperties): string {
+  return `
+    <div class="toll-card">
+      <div class="toll-card-header">
+        <span class="toll-card-dot toll-card-dot-price"></span>
+        <strong class="toll-card-name">${escapeHtml(p.name)}</strong>
+        ${p.networkName ? `<span class="toll-card-road">${escapeHtml(p.networkName)}</span>` : ''}
+      </div>
+      <div class="toll-card-body">
+        <div class="toll-card-row">
+          <span class="toll-card-label">Prix</span>
+          <span class="toll-card-value">${escapeHtml(p.priceLabel)}</span>
+        </div>
+      </div>
+      <div class="toll-card-note">${
+        p.kind === 'portion'
+          ? 'Prix de la portion (entrée → sortie)'
+          : 'Prix au passage de la gare (barrière à prix fixe)'
+      }</div>
+    </div>`;
+}
 
 const store = useLocationStore();
 
@@ -30,8 +191,9 @@ const {start, end} = storeToRefs(store);
 let mapbox: Map;
 let startMarker: Marker;
 let endMarker: Marker;
-let tollFeatures: TollFeature[] = [];
-let routeCoordsList: [number, number][][] = [];
+
+/** Écarte une réponse d'enrichissement arrivée après un nouvel affichage. */
+let tollsGeneration = 0;
 const hasRoute = ref<boolean>(false);
 
 function toggleTolls() {
@@ -51,9 +213,11 @@ function escapeHtml(value: unknown): string {
   );
 }
 
-function buildTollCard(p: Record<string, any>): string {
+function buildTollCard(p: TollProperties): string {
   const rows = [
     p.type && ['Type', p.type],
+    p.networkName && ['Réseau', p.networkName],
+    p.stationName && ['Gare', p.stationName],
     p.side && ['Sens', p.side],
     p.laneCount && ['Voies', `${p.laneCount} voie${p.laneCount > 1 ? 's' : ''}`],
   ].filter(Boolean) as [string, string][];
@@ -62,7 +226,7 @@ function buildTollCard(p: Record<string, any>): string {
     <div class="toll-card">
       <div class="toll-card-header">
         <span class="toll-card-dot"></span>
-        <strong class="toll-card-name">${escapeHtml(p.name ?? 'Péage')}</strong>
+        <strong class="toll-card-name">${escapeHtml(p.name)}</strong>
         ${p.road ? `<span class="toll-card-road">${escapeHtml(p.road)}</span>` : ''}
       </div>
       ${rows.length ? `
@@ -73,7 +237,75 @@ function buildTollCard(p: Record<string, any>): string {
             <span class="toll-card-value">${escapeHtml(value)}</span>
           </div>`).join('')}
       </div>` : ''}
+      ${p.matched ? '' : '<div class="toll-card-note">Signalé par Mapbox — absent du référentiel local</div>'}
     </div>`;
+}
+
+/** Aplatit un péage Mapbox enrichi en feature prête pour la source `tolls`. */
+function tollToFeature(toll: MapboxToll): TollFeature {
+  const match = toll.match;
+  const kindLabel = toll.kind ? TOLL_KIND_LABELS[toll.kind] ?? toll.kind : null;
+  return {
+    type: 'Feature',
+    geometry: {type: 'Point', coordinates: toll.location},
+    properties: {
+      name: match?.name ?? toll.name ?? 'Péage',
+      matched: match !== null,
+      type: match?.gateTypeLabel ?? kindLabel,
+      road: match?.road ?? null,
+      side: match?.side ?? null,
+      laneCount: match?.laneCount ?? null,
+      stationName: match?.stationName ?? null,
+      networkName: match?.networkName ?? null,
+    },
+  };
+}
+
+/** Remplace les péages affichés (dédupliqués par coordonnées entre variantes). */
+function displayTolls(tolls: MapboxToll[]) {
+  const source = mapbox.getSource('tolls') as GeoJSONSource | undefined;
+  if (!source) return;
+
+  const seen = new Set<string>();
+  const features = tolls
+    .filter((toll) => {
+      const key = toll.location.join(',');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map(tollToFeature);
+
+  source.setData({type: 'FeatureCollection', features});
+
+  // Le nouvel affichage n'a d'intérêt que si la layer est visible
+  if (!tollsVisible.value) toggleTolls();
+}
+
+/**
+ * Péages du tracé de prévisualisation : les annotations Mapbox s'affichent
+ * immédiatement, puis sont enrichies par le référentiel local dès que
+ * l'appariement répond.
+ */
+async function showPreviewTolls(collections: RouteTollCollection[]) {
+  const generation = ++tollsGeneration;
+  displayTolls(collections.map((collection) => ({...collection, match: null})));
+  if (collections.length === 0) return;
+
+  let matches: (TollMatch | null)[];
+  try {
+    matches = await useTolls.matchTolls(collections.map((collection) => collection.location));
+  } catch (e) {
+    console.error('Enrichissement des péages impossible :', e);
+    return;
+  }
+
+  // Une optimisation ou un nouveau tracé a remplacé l'affichage entre-temps
+  if (generation !== tollsGeneration) return;
+  displayTolls(collections.map((collection, index) => ({
+    ...collection,
+    match: matches[index] ?? null,
+  })));
 }
 
 watch(start, (value) => {
@@ -122,8 +354,8 @@ onMounted(() => {
       const f = e.features?.[0];
       if (!f) return;
       new Popup({ offset: 12, maxWidth: '300px', className: 'toll-popup' })
-        .setLngLat((f.geometry as any).coordinates)
-        .setHTML(buildTollCard(f.properties ?? {}))
+        .setLngLat((f.geometry as TollFeature['geometry']).coordinates)
+        .setHTML(buildTollCard(f.properties as TollProperties))
         .addTo(mapbox);
     });
     mapbox.on('mouseenter', 'tolls-layer', () => {
@@ -182,19 +414,49 @@ onMounted(() => {
       paint:  { 'line-color': [...variantColor], 'line-width': 4 },
     }, 'tolls-layer');
 
-    // Données chargées depuis la base via l'endpoint AdonisJS, conservées
-    // en mémoire pour pouvoir filtrer les péages le long d'une route
-    try {
-      const res = await fetch('/api/tolls.geojson');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      tollFeatures = (await res.json()).features ?? [];
-      (mapbox.getSource('tolls') as GeoJSONSource).setData({
-        type: 'FeatureCollection',
-        features: tollFeatures,
+    // Portions payantes de la variante active : sous-polylignes survolables
+    // sous les points de péage (qui restent cliquables), étiquettes de prix
+    // au-dessus de tout.
+    mapbox.addSource('toll-sections', {type: 'geojson', data: { type: 'FeatureCollection', features: [] }});
+    mapbox.addLayer({
+      id: 'toll-sections-line', type: 'line', source: 'toll-sections',
+      filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'variant'], 'best']],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#7c3aed', 'line-width': 6, 'line-opacity': 0.7 },
+    }, 'tolls-layer');
+    mapbox.addLayer({
+      id: 'toll-sections-label', type: 'symbol', source: 'toll-sections',
+      filter: ['all', ['==', ['geometry-type'], 'Point'], ['==', ['get', 'variant'], 'best']],
+      layout: {
+        'text-field': ['get', 'label'],
+        'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+        'text-size': 13,
+        'text-offset': [0, -1],
+        'text-anchor': 'bottom',
+      },
+      paint: {
+        'text-color': '#6d28d9',
+        'text-halo-color': '#ffffff',
+        'text-halo-width': 1.6,
+      },
+    });
+
+    // Popup de survol des portions : suit la souris, sans bouton de fermeture
+    const hoverPopup = new Popup({ closeButton: false, closeOnClick: false, offset: 12, maxWidth: '320px', className: 'toll-popup' });
+    for (const layer of ['toll-sections-line', 'toll-sections-label']) {
+      mapbox.on('mousemove', layer, (e) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        mapbox.getCanvas().style.cursor = 'pointer';
+        hoverPopup
+          .setLngLat(e.lngLat)
+          .setHTML(buildSectionCard(f.properties as SectionProperties))
+          .addTo(mapbox);
       });
-      applyTollFilter();
-    } catch (e) {
-      console.error('Erreur lors du chargement des péages :', e);
+      mapbox.on('mouseleave', layer, () => {
+        mapbox.getCanvas().style.cursor = '';
+        hoverPopup.remove();
+      });
     }
   });
 });
@@ -218,22 +480,27 @@ async function drawRoute() {
 
   try {
     const data = await useMapbox.getRoute([s, e]);
-    const geometry = data.routes[0].geometry;
+    const route = data.routes[0];
     (mapbox.getSource('default-route') as GeoJSONSource).setData({
       type: 'FeatureCollection',
-      features: [{ type: 'Feature', geometry, properties: {} }],
+      features: [{ type: 'Feature', geometry: route.geometry, properties: {} }],
     });
-    // Les variantes d'une optimisation précédente ne correspondent plus
-    // aux nouveaux marqueurs
+    // Les variantes d'une optimisation précédente (et leurs portions
+    // tarifées) ne correspondent plus aux nouveaux marqueurs
     if (mapbox.getSource('variant-routes')) {
       (mapbox.getSource('variant-routes') as GeoJSONSource).setData({
         type: 'FeatureCollection',
         features: [],
       });
     }
-    routeCoordsList = [geometry.coordinates];
+    if (mapbox.getSource('toll-sections')) {
+      (mapbox.getSource('toll-sections') as GeoJSONSource).setData({
+        type: 'FeatureCollection',
+        features: [],
+      });
+    }
     hasRoute.value = true;
-    applyTollFilter();
+    void showPreviewTolls(useMapbox.extractTollCollections(route));
     mapbox.fitBounds([startMarker.getLngLat(), endMarker.getLngLat()], { padding: 60, maxZoom: 13, speed: 2 });
   } catch (e) {
     console.error('Erreur lors du dessin de l’itinéraire :', e);
@@ -262,9 +529,17 @@ function showRoutes(routes: DisplayedRoute[], active: RouteVariantKey) {
     features: [],
   });
 
-  routeCoordsList = routes.map((route) => route.geometry.coordinates);
   hasRoute.value = true;
-  applyTollFilter();
+  // Les péages viennent déjà enrichis de l'optimiseur ; l'union des
+  // variantes est affichée, comme les tracés eux-mêmes.
+  tollsGeneration++;
+  displayTolls(routes.flatMap((route) => route.tolls));
+  // Les portions payantes de toutes les variantes sont chargées d'un coup ;
+  // seule celle de la variante active est visible (filtres).
+  (mapbox.getSource('toll-sections') as GeoJSONSource).setData({
+    type: 'FeatureCollection',
+    features: routes.flatMap(sectionFeatures),
+  });
   setActiveVariant(active);
 
   const allCoords = routes.flatMap((route) => route.geometry.coordinates);
@@ -281,6 +556,8 @@ function setActiveVariant(active: RouteVariantKey) {
   mapbox.setFilter('variant-routes-dim', ['!=', ['get', 'variant'], active]);
   mapbox.setFilter('variant-route-active-casing', ['==', ['get', 'variant'], active]);
   mapbox.setFilter('variant-route-active', ['==', ['get', 'variant'], active]);
+  mapbox.setFilter('toll-sections-line', ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'variant'], active]]);
+  mapbox.setFilter('toll-sections-label', ['all', ['==', ['geometry-type'], 'Point'], ['==', ['get', 'variant'], active]]);
 }
 
 /** Recentre la carte sur un point (péage cliqué dans le panneau). */
@@ -289,78 +566,12 @@ function focusPoint(center: [number, number]) {
 }
 
 defineExpose({ showRoutes, setActiveVariant, focusPoint });
-
-/**
- * Restreint la layer des péages à ceux situés le long des routes affichées
- * (union des variantes). Sans route, tous les péages sont visibles.
- */
-function applyTollFilter() {
-  if (!mapbox.getLayer('tolls-layer')) return;
-
-  if (routeCoordsList.length === 0 || !tollFeatures.length) {
-    mapbox.setFilter('tolls-layer', null);
-    return;
-  }
-
-  // Bounding box des routes élargie du seuil, pour écarter à moindre coût
-  // les péages manifestement trop éloignés
-  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
-  for (const coords of routeCoordsList) {
-    for (const [lng, lat] of coords) {
-      if (lng < minLng) minLng = lng;
-      if (lng > maxLng) maxLng = lng;
-      if (lat < minLat) minLat = lat;
-      if (lat > maxLat) maxLat = lat;
-    }
-  }
-  const latMargin = TOLL_ROUTE_THRESHOLD_M / 111_320;
-  const lngMargin = latMargin / Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
-
-  const ids = tollFeatures
-    .filter((f) => {
-      const [lng, lat] = f.geometry.coordinates;
-      if (lng < minLng - lngMargin || lng > maxLng + lngMargin) return false;
-      if (lat < minLat - latMargin || lat > maxLat + latMargin) return false;
-      return routeCoordsList.some((coords) =>
-        isNearPolyline(lng, lat, coords, TOLL_ROUTE_THRESHOLD_M));
-    })
-    .map((f) => f.properties.id);
-
-  mapbox.setFilter('tolls-layer', ['in', ['get', 'id'], ['literal', ids]]);
-
-  // Le filtrage n'a d'intérêt que si la layer est visible
-  if (!tollsVisible.value) toggleTolls();
-}
-
-/**
- * Distance point → polyligne en projection équirectangulaire locale,
- * suffisante à l'échelle de quelques centaines de mètres.
- */
-function isNearPolyline(lng: number, lat: number, coords: [number, number][], thresholdM: number): boolean {
-  const kx = 111_320 * Math.cos(lat * Math.PI / 180); // mètres par degré de longitude
-  const ky = 111_320;                                 // mètres par degré de latitude
-  const px = lng * kx;
-  const py = lat * ky;
-  const t2 = thresholdM * thresholdM;
-
-  for (let i = 0; i < coords.length - 1; i++) {
-    const ax = coords[i][0] * kx, ay = coords[i][1] * ky;
-    const dx = coords[i + 1][0] * kx - ax;
-    const dy = coords[i + 1][1] * ky - ay;
-    let t = dx || dy ? ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy) : 0;
-    t = Math.max(0, Math.min(1, t));
-    const ddx = px - (ax + t * dx);
-    const ddy = py - (ay + t * dy);
-    if (ddx * ddx + ddy * ddy <= t2) return true;
-  }
-  return false;
-}
 </script>
 
 <template>
   <div class="map-wrapper">
-    <button class="layer-toggle" @click="toggleTolls">
-      {{ tollsVisible ? 'Cacher' : 'Afficher' }} {{ hasRoute ? 'les péages du trajet' : 'les péages de France' }}
+    <button v-if="hasRoute" class="layer-toggle" @click="toggleTolls">
+      {{ tollsVisible ? 'Cacher' : 'Afficher' }} les péages du trajet
     </button>
     <div id="map" ref="map"></div>
   </div>
@@ -441,6 +652,11 @@ function isNearPolyline(lng: number, lat: number, coords: [number, number][], th
         box-shadow: 0 0 0 1px var(--color-border);
       }
 
+      /* Popup de portion tarifée : pastille assortie à la ligne violette */
+      &-dot-price {
+        background: #7c3aed;
+      }
+
       &-name {
         font-size: 13px;
         color: var(--color-text);
@@ -480,6 +696,14 @@ function isNearPolyline(lng: number, lat: number, coords: [number, number][], th
         color: var(--color-text);
         font-weight: 500;
         text-align: right;
+      }
+
+      &-note {
+        padding: 8px 12px;
+        border-top: 1px dashed var(--color-border);
+        font-size: 11px;
+        font-style: italic;
+        color: var(--color-muted);
       }
     }
   }

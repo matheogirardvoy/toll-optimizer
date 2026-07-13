@@ -270,12 +270,19 @@ function onChartSelect(sectionKey: string) {
 // bascules d'onglet ne touchent ensuite qu'aux filtres des layers.
 watch(result, (optimized) => {
   if (!optimized) return;
+  const toDisplayed = (key: RouteVariantKey, route: EvaluatedRoute): DisplayedRoute => ({
+    key,
+    geometry: route.geometry,
+    tolls: route.mapboxTolls,
+    sections: route.pricing.sections,
+  });
+
   const routes: DisplayedRoute[] = [
-    { key: 'best', geometry: optimized.best.geometry },
-    { key: 'fastest', geometry: optimized.fastest.geometry },
+    toDisplayed('best', optimized.best),
+    toDisplayed('fastest', optimized.fastest),
   ];
   if (optimized.noToll) {
-    routes.push({ key: 'no-toll', geometry: optimized.noToll.geometry });
+    routes.push(toDisplayed('no-toll', optimized.noToll));
   }
   map.value?.showRoutes(routes, activeVariant.value);
 });

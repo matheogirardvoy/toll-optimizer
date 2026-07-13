@@ -4,7 +4,9 @@ import type { routes } from './index.ts'
 export interface ApiDefinition {
   home: typeof routes['home']
   api: {
-    tolls: typeof routes['api.tolls']
+    tolls: typeof routes['api.tolls'] & {
+      match: typeof routes['api.tolls.match']
+    }
     optimize: typeof routes['api.optimize']
   }
   admin: {

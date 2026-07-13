@@ -18,6 +18,12 @@ const routes = {
     tokens: [{"old":"/api/tolls.geojson","type":0,"val":"api","end":""},{"old":"/api/tolls.geojson","type":0,"val":"tolls.geojson","end":""}],
     types: placeholder as Registry['api.tolls']['types'],
   },
+  'api.tolls.match': {
+    methods: ["POST"],
+    pattern: '/api/tolls/match',
+    tokens: [{"old":"/api/tolls/match","type":0,"val":"api","end":""},{"old":"/api/tolls/match","type":0,"val":"tolls","end":""},{"old":"/api/tolls/match","type":0,"val":"match","end":""}],
+    types: placeholder as Registry['api.tolls.match']['types'],
+  },
   'api.optimize': {
     methods: ["POST"],
     pattern: '/api/optimize',

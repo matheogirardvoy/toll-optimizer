@@ -271,7 +271,7 @@ un péage rentable (conservé), au-dessus il est évité.
 // Réponse (extraits)
 {
   "rhoCentsPerMinute": 33.33,
-  "best":    { "kind": "hybrid", "durationSeconds": ..., "geometry": ..., "pricing": ..., "scoreMinutes": ..., "excludedStations": [...] },
+  "best":    { "kind": "hybrid", "durationSeconds": ..., "geometry": ..., "pricing": ..., "mapboxTolls": [...], "scoreMinutes": ..., "excludedStations": [...] },
   "fastest": { ... }, "noToll": { ... } | null,
   "evaluated": [ /* résumés sans géométrie, triés par score, avec issues */ ],
   "decisions": [ /* rentabilité par tronçon, cf. §4.5 */ ],
@@ -281,6 +281,16 @@ un péage rentable (conservé), au-dessus il est évité.
 
 Erreurs : `422` (aucun itinéraire, ou payload invalide), `503` (Mapbox
 indisponible).
+
+Chaque route évaluée porte `mapboxTolls` : les points de perception que
+Mapbox annote sur le tracé (`toll_collection` des intersections, livré
+avec `steps=true`), chacun apparié au péage le plus proche du référentiel
+local (`match` : gare, réseau, type, sens, voies, distance — ou `null` si
+rien à moins de `MATCH_RADIUS_METERS`). C'est ce que la carte affiche.
+
+`POST /api/tolls/match` fait le même appariement pour le front (tracé de
+prévisualisation calculé côté client) : `{ "points": [[lng, lat], …] }` →
+`{ "matches": [TollMatch | null, …] }`, dans l'ordre de la requête.
 
 ---
 
@@ -296,6 +306,22 @@ indisponible).
   (« réseau non couvert », « sortie introuvable »).
 - **ChartPanel** : colonnes €/h par péage, ligne de seuil ρ, colonnes
   translucides quand la comparaison est incertaine.
+- **Péages sur la carte** : la layer `tolls` n'affiche plus le référentiel
+  complet mais les péages que Mapbox annote sur les tracés affichés
+  (prévisualisation : extraction côté front + enrichissement via
+  `POST /api/tolls/match` ; variantes d'optimisation : `mapboxTolls`
+  déjà enrichis par le serveur). La popup montre le nom du référentiel,
+  la route, le type, le réseau, la gare, le sens et le nombre de voies ;
+  un point sans correspondance est signalé « absent du référentiel local ».
+- **Prix des portions sur la carte** : pour la variante active, chaque
+  section tarifée est dessinée en surcouche violette (sous-polyligne
+  découpée du tracé entre les `alongMeters` d'entrée et de sortie) avec
+  une étiquette de prix (« 12,30 € », « ? » si non chiffré). Au survol,
+  une popup précise s'il s'agit du **prix de la portion** (couple
+  entrée → sortie, système fermé) ou du **prix au passage de la gare**
+  (barrière à prix fixe, `exit` nul). Une barrière n'a pas de ligne :
+  seulement l'étiquette sur la gare. La bascule de variante ne change que
+  les filtres des layers, comme pour les tracés.
 
 ---
 
@@ -344,6 +370,7 @@ docker compose run --rm node node ace optimize:route "45.764,4.8357" "48.8566,2.
 | `MAX_EXCLUDE_POINTS` | 50 | limite de l'API Mapbox |
 | `MAX_ITERATIONS` | 5 | borne de la boucle greedy |
 | `UNPRICEABLE_CROSSING_PENALTY_CENTS` | 2 000 | pénalité pessimiste par franchissement intarifable |
+| `MATCH_RADIUS_METERS` | 400 m | appariement point `toll_collection` Mapbox → péage du référentiel : Mapbox annote la chaussée en amont de la barrière (285 m d'écart à Fleury-en-Bière, 224 m à Villefranche-Limas) ; gares voisines séparées d'au moins ~450 m, « le plus proche gagne » |
 
 ---
 
