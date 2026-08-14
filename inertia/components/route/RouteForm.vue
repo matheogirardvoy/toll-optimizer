@@ -1,9 +1,22 @@
 <script setup lang="ts">
-/** RouteForm — the "Itinéraire" card: two LocationInput fields + vehicle class. */
+/** RouteForm — le bloc « Trajet » : départ, arrivée, classe de véhicule. */
+import {computed} from "vue";
 import LocationInput from '~/components/route/LocationInput.vue';
 import {Feature} from "~/composables/map/useMapbox";
 
-defineProps<{
+/**
+ * Les cinq classes du portique de péage. La valeur (`cl1`…`cl5`) est celle
+ * attendue par le pricer ; le chiffre est celui affiché sur les panneaux.
+ */
+const VEHICLE_CLASSES: { value: string; digit: string; label: string }[] = [
+  { value: 'cl1', digit: '1', label: 'Voiture, jusqu’à 2 m de hauteur' },
+  { value: 'cl2', digit: '2', label: 'Voiture avec caravane' },
+  { value: 'cl3', digit: '3', label: 'Camionnette 3 essieux' },
+  { value: 'cl4', digit: '4', label: 'Poids lourd 4 essieux' },
+  { value: 'cl5', digit: '5', label: 'Moto' },
+];
+
+const props = defineProps<{
   vehicleClass: string
 }>();
 
@@ -13,43 +26,46 @@ const emit = defineEmits<{
   (e: 'update:vehicleClass', value: string|null): void,
   (e: 'submit'): void,
 }>();
+
+const selectedLabel = computed<string>(() =>
+    VEHICLE_CLASSES.find((option) => option.value === props.vehicleClass)?.label ?? '');
 </script>
 
 <template>
   <div class="card">
-    <p class="card-title">🗺️ Itinéraire</p>
-    <form @submit.prevent="$emit('submit')" novalidate>
+    <p class="card-title">Trajet</p>
+    <form @submit.prevent="emit('submit')" novalidate>
       <LocationInput
           label="Départ"
+          marker="start"
           input="input-start"
           placeholder="Ex : Paris, Gare de Lyon"
           @select="emit('select-start', $event)"
       />
       <LocationInput
           label="Arrivée"
+          marker="end"
           input="input-end"
           placeholder="Ex : Lyon, Confluence"
           @select="emit('select-end', $event)"
       />
       <div class="form-group">
-        <label for="vehicle-class">Type de véhicule</label>
-        <select
-            id="vehicle-class"
-            :value="vehicleClass"
-            @change="emit('update:vehicleClass', ($event.target as HTMLSelectElement).value)"
-            aria-label="Classe de véhicule"
-        >
-          <option value="cl1">🚗 Voiture (≤ 2m)</option>
-          <option value="cl2">🚗🚌 Voiture + caravane</option>
-          <option value="cl3">🚐 Camionnette 3 essieux</option>
-          <option value="cl4">🚛 PL 4 essieux</option>
-          <option value="cl5">🏍️ Moto</option>
-        </select>
+        <span id="vehicle-class-label" class="field-label">Classe de véhicule</span>
+        <div class="class-picker" role="radiogroup" aria-labelledby="vehicle-class-label">
+          <button
+              v-for="option in VEHICLE_CLASSES"
+              :key="option.value"
+              type="button"
+              role="radio"
+              class="class-picker-option"
+              :class="{ 'is-selected': option.value === vehicleClass }"
+              :aria-checked="option.value === vehicleClass"
+              :aria-label="`Classe ${option.digit} : ${option.label}`"
+              @click="emit('update:vehicleClass', option.value)"
+          >{{ option.digit }}</button>
+        </div>
+        <p class="class-caption">{{ selectedLabel }}</p>
       </div>
     </form>
   </div>
 </template>
-
-<style scoped lang="less">
-
-</style>

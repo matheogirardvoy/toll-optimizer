@@ -8,6 +8,7 @@ import PriceLookup from '#services/pricing/price_lookup'
 import {
   boundingBox,
   cumulativeMeters,
+  distanceMeters,
   projectOnPolyline,
   type LngLat,
 } from '#services/pricing/geometry'
@@ -41,6 +42,23 @@ const CROSSING_WINDOW_METERS = 500
 const RESCUE_SCAN_METERS = 60
 const RESCUE_RANGE_METERS = 30_000
 
+/**
+ * Réparation par annotations Mapbox : l'API Directions marque chaque point
+ * de perception réellement franchi (`toll_collection`). Une annotation sans
+ * franchissement détecté dans sa fenêtre curviligne révèle une gare manquée
+ * par le corridor strict — sur les grandes barrières pleine voie, le point
+ * du référentiel projette parfois à 14-17 m du tracé (Le Bignon et Virsac
+ * sur A83/A10 : les deux BPV manquées d'un coup, aucun orphelin, donc
+ * `rescueOrphans` aveugle et 33,20 € perdus sans anomalie). La gare la plus
+ * proche de l'annotation redevient un franchissement — même rayon que
+ * l'appariement d'affichage (Fleury-en-Bière annotée à 285 m de son point),
+ * sûr car les gares voisines sont séparées d'au moins ~450 m.
+ */
+const ANNOTATION_MATCH_RADIUS_METERS = 400
+
+/** Fenêtre curviligne dans laquelle une annotation est déjà couverte. */
+const ANNOTATION_COVER_WINDOW_METERS = 500
+
 export type RouteLineString = {
   type: 'LineString'
   coordinates: LngLat[]
@@ -56,6 +74,13 @@ export type RoutePricingQuery = {
   date?: DateTime
 
   matchThresholdMeters?: number
+
+  /**
+   * Annotations `toll_collection` du tracé (API Directions, `steps=true`) :
+   * témoins des péages réellement franchis, elles réparent les gares
+   * manquées par le corridor strict.
+   */
+  tollCollections?: Array<{ location: LngLat }>
 }
 
 /** Point physique apparié au tracé — coordonnées prêtes pour `exclude=point()`. */
@@ -127,6 +152,9 @@ type UnpricedSection = {
   network: TollNetwork
   entry: Crossing
   exit: Crossing | null
+
+  /** BPV du même réseau enjambées entre l'entrée et la sortie (`pairBlock`). */
+  intermediates: Crossing[]
 }
 
 /** Franchissement resté sans sortie après appariement d'un bloc fermé. */
@@ -156,6 +184,17 @@ export default class RoutePricer {
     const threshold = query.matchThresholdMeters ?? DEFAULT_MATCH_THRESHOLD_METERS
     const matches = await this.matchTolls(line, threshold)
     const crossings = this.groupIntoCrossings(matches)
+
+    const rescuedByAnnotations = await this.rescueByAnnotations(
+      query.tollCollections ?? [],
+      crossings,
+      line
+    )
+    if (rescuedByAnnotations.length > 0) {
+      crossings.push(...rescuedByAnnotations)
+      crossings.sort((a, b) => a.alongMeters - b.alongMeters)
+    }
+
     const { sections, orphans, issues } = this.pairCrossings(crossings)
 
     const { rescued, remaining } = await this.rescueOrphans(orphans, crossings, line, threshold, query)
@@ -277,7 +316,7 @@ export default class RoutePricer {
       }
 
       if (network.pricingMode === 'open') {
-        sections.push({ network, entry: crossing, exit: null })
+        sections.push({ network, entry: crossing, exit: null, intermediates: [] })
         continue
       }
 
@@ -313,19 +352,26 @@ export default class RoutePricer {
     orphans: OrphanCrossing[]
   ): void {
     let pending: Crossing | null = null
+    let skipped: Crossing[] = []
     const lastIndex = crossings.length - 1
 
     for (let index = 0; index <= lastIndex; index++) {
       const crossing = crossings[index]
       if (!pending) {
         pending = crossing
+        skipped = []
         continue
       }
 
       const closesSection = crossing.station.gateType !== 'Bpv' || index === lastIndex
       if (closesSection) {
-        sections.push({ network, entry: pending, exit: crossing })
+        sections.push({ network, entry: pending, exit: crossing, intermediates: skipped })
         pending = null
+        skipped = []
+      } else {
+        // Mémorisée : si le couple des extrémités manque à la grille, la
+        // scission (`splitAtIntermediates`) pourra clore la section ici.
+        skipped.push(crossing)
       }
     }
 
@@ -334,6 +380,87 @@ export default class RoutePricer {
     if (pending) {
       orphans.push({ network, crossing: pending })
     }
+  }
+
+  /**
+   * Réparation par annotations Mapbox : chaque annotation `toll_collection`
+   * sans franchissement détecté dans sa fenêtre curviligne est rattachée à
+   * la gare référentiel la plus proche (≤ `ANNOTATION_MATCH_RADIUS_METERS`),
+   * injectée comme franchissement ordinaire — l'annotation atteste le
+   * passage, seul le plafond des 10 m saute. Une annotation sans gare à
+   * proximité (péage étranger, référentiel incomplet) est ignorée.
+   */
+  private async rescueByAnnotations(
+    annotations: Array<{ location: LngLat }>,
+    crossings: Crossing[],
+    line: LngLat[]
+  ): Promise<Crossing[]> {
+    if (annotations.length === 0 || line.length < 2) return []
+    const cumulative = cumulativeMeters(line)
+
+    const uncovered: Array<{ location: LngLat; alongMeters: number }> = []
+    for (const annotation of annotations) {
+      const projection = projectOnPolyline(annotation.location, line, cumulative)
+      if (!projection) continue
+      uncovered.push({ location: annotation.location, alongMeters: projection.alongMeters })
+    }
+    if (uncovered.length === 0) return []
+
+    const bbox = boundingBox(
+      uncovered.map((annotation) => annotation.location),
+      ANNOTATION_MATCH_RADIUS_METERS
+    )
+    const candidates = await Toll.query()
+      .whereNotNull('station_id')
+      .whereBetween('latitude', [bbox.minLat, bbox.maxLat])
+      .whereBetween('longitude', [bbox.minLng, bbox.maxLng])
+      .preload('station', (station) => station.preload('network'))
+
+    const rescued: Crossing[] = []
+    const isCovered = (alongMeters: number) =>
+      [...crossings, ...rescued].some(
+        (crossing) =>
+          Math.abs(crossing.alongMeters - alongMeters) <= ANNOTATION_COVER_WINDOW_METERS
+      )
+
+    for (const annotation of uncovered) {
+      if (isCovered(annotation.alongMeters)) continue
+
+      let best: { toll: Toll; distance: number } | null = null
+      for (const toll of candidates) {
+        if (!toll.station) continue
+        const distance = distanceMeters(annotation.location, [toll.longitude, toll.latitude])
+        if (distance > ANNOTATION_MATCH_RADIUS_METERS) continue
+        if (!best || distance < best.distance) {
+          best = { toll, distance }
+        }
+      }
+      if (!best) continue
+
+      // La gare retrouvée est projetée comme un match ordinaire, pour que
+      // l'abscisse curviligne et la distance restent comparables aux autres.
+      const projection = projectOnPolyline(
+        [best.toll.longitude, best.toll.latitude],
+        line,
+        cumulative
+      )
+      const match: Match = {
+        toll: best.toll,
+        station: best.toll.station,
+        network: best.toll.station.network,
+        alongMeters: projection?.alongMeters ?? annotation.alongMeters,
+        distanceMeters: projection?.distanceMeters ?? best.distance,
+      }
+      rescued.push({
+        station: match.station,
+        network: match.network,
+        alongMeters: match.alongMeters,
+        lastAlongMeters: match.alongMeters,
+        matches: [match],
+      })
+    }
+
+    return rescued
   }
 
   /**
@@ -390,7 +517,7 @@ export default class RoutePricer {
           date: query.date,
         })
         if (price !== null) {
-          section = { network: orphan.network, entry, exit }
+          section = { network: orphan.network, entry, exit, intermediates: [] }
           break
         }
       }
@@ -447,8 +574,26 @@ export default class RoutePricer {
         continue
       }
 
-      // Couple fermé absent de la grille : chaque extrémité tente son prix
-      // de franchissement seul ; celle qui n'en a pas redevient orpheline.
+      // Couple fermé absent de la grille : si des BPV intermédiaires ont été
+      // enjambées, la grille arbitre d'abord une scission — l'une d'elles
+      // était peut-être le vrai règlement (Virsac entre Le Bignon et
+      // Biriatou, tout ASF).
+      const split = await this.splitAtIntermediates(section, lookup)
+      if (split) {
+        for (const part of split.sections) {
+          priced.push(
+            this.describeSection(section.network, part.entry, part.exit, {
+              priceCents: part.priceCents,
+            })
+          )
+        }
+        // Traités par la boucle des orphelins ci-dessous
+        orphans.push(...split.orphans)
+        continue
+      }
+
+      // Sinon, chaque extrémité tente son prix de franchissement seul ;
+      // celle qui n'en a pas redevient orpheline.
       const [entryBarrier, exitBarrier] = await Promise.all([
         lookup(section.entry.station.id, null),
         lookup(section.exit.station.id, null),
@@ -495,6 +640,77 @@ export default class RoutePricer {
     }
 
     return priced.sort((a, b) => a.entry.alongMeters - b.entry.alongMeters)
+  }
+
+  /**
+   * Scission d'un bloc fermé dont le couple d'extrémités manque à la grille :
+   * une BPV « intermédiaire » du même réseau peut en réalité être le
+   * règlement d'une section (Virsac entre Le Bignon et Biriatou — A83, A10
+   * et A63 sont toutes ASF, le bloc les fusionne). La grille arbitre ; null
+   * si aucun préfixe n'est tarifé, le repli barrière garde alors la main.
+   */
+  private async splitAtIntermediates(
+    section: UnpricedSection,
+    lookup: (
+      entryStationId: number,
+      exitStationId: number | null
+    ) => Promise<{ priceCents: number } | null>
+  ): Promise<{
+    sections: Array<{ entry: Crossing; exit: Crossing; priceCents: number }>
+    orphans: OrphanCrossing[]
+  } | null> {
+    if (!section.exit || section.intermediates.length === 0) return null
+    return this.resolveClosedChain(
+      section.network,
+      [section.entry, ...section.intermediates, section.exit],
+      lookup
+    )
+  }
+
+  /**
+   * Résout une chaîne de franchissements d'un réseau fermé : le plus long
+   * préfixe tarifé par la grille l'emporte (le ticket se garde jusqu'au
+   * règlement), le reste est résolu récursivement. Un franchissement resté
+   * seul repart dans le circuit des orphelins (prix barrière ou anomalie).
+   */
+  private async resolveClosedChain(
+    network: TollNetwork,
+    chain: Crossing[],
+    lookup: (
+      entryStationId: number,
+      exitStationId: number | null
+    ) => Promise<{ priceCents: number } | null>
+  ): Promise<{
+    sections: Array<{ entry: Crossing; exit: Crossing; priceCents: number }>
+    orphans: OrphanCrossing[]
+  } | null> {
+    if (chain.length === 1) {
+      return { sections: [], orphans: [{ network, crossing: chain[0] }] }
+    }
+
+    const entry = chain[0]
+
+    // Du règlement le plus aval au plus amont — les extrémités d'abord.
+    for (let index = chain.length - 1; index >= 1; index--) {
+      const price = await lookup(entry.station.id, chain[index].station.id)
+      if (price === null) continue
+
+      if (index === chain.length - 1) {
+        return {
+          sections: [{ entry, exit: chain[index], priceCents: price.priceCents }],
+          orphans: [],
+        }
+      }
+
+      const rest = await this.resolveClosedChain(network, chain.slice(index + 1), lookup)
+      if (rest === null) return null
+      return {
+        sections: [{ entry, exit: chain[index], priceCents: price.priceCents }, ...rest.sections],
+        orphans: rest.orphans,
+      }
+    }
+
+    return null
   }
 
   private describeSection(

@@ -26,6 +26,8 @@ createInertiaApp({
       .mount(el)
   },
   progress: {
-    color: '#4B5563',
+    // `--azur` : la barre de navigation Inertia n'est pas du CSS et ne peut
+    // pas lire la variable, la valeur est donc reprise en dur.
+    color: '#3d8fff',
   },
 });

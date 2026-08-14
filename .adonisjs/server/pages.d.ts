@@ -10,6 +10,7 @@ type ExtractProps<T> = Omit<
 declare module '@adonisjs/inertia/types' {
   export interface InertiaPages {
     'admin/dashboard': ExtractProps<(typeof import('../../inertia/pages/admin/dashboard.vue'))['default']>
+    'admin/duplicates': ExtractProps<(typeof import('../../inertia/pages/admin/duplicates.vue'))['default']>
     'admin/prices': ExtractProps<(typeof import('../../inertia/pages/admin/prices.vue'))['default']>
     'admin/stations/index': ExtractProps<(typeof import('../../inertia/pages/admin/stations/index.vue'))['default']>
     'admin/stations/show': ExtractProps<(typeof import('../../inertia/pages/admin/stations/show.vue'))['default']>

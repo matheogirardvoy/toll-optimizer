@@ -2,6 +2,9 @@
 /**
  * ResultsPanel — synthèse de la variante affichée : durée/prix, écart avec
  * la route la plus rapide, et liste des péages conservés/évités.
+ *
+ * Les péages reprennent la signalétique des voies de péage : flèche verte, on
+ * franchit ; croix rouge, l'itinéraire contourne.
  */
 
 export type ResultsSummary = {
@@ -57,84 +60,105 @@ function signedDuration(seconds: number): string {
   const minutes = Math.round(Math.abs(seconds) / 60);
   return `${seconds > 0 ? '+' : '−'}${minutes} min`;
 }
+
+function statusLabel(status: TollDecision['status']): string {
+  switch (status) {
+    case 'kept':    return 'Franchi';
+    case 'avoided': return 'Évité';
+    default:        return 'Non tarifé';
+  }
+}
 </script>
 
 <template>
   <div id="results-panel" class="card">
-    <p class="card-title">🧾 Résultat</p>
+    <p class="card-title">Détail du trajet</p>
 
-    <div class="summary-grid">
-      <div class="summary-item">
-        <div class="summary-label">Durée</div>
-        <div class="summary-value">{{ duration(summary.durationSeconds) }}</div>
-      </div>
-      <div class="summary-item">
-        <div class="summary-label">Péages</div>
-        <div class="summary-value">{{ euros(summary.totalCents) }}</div>
-      </div>
-      <div class="summary-item">
-        <div class="summary-label">Temps vs rapide</div>
-        <div
-            class="summary-value"
-            :class="summary.deltaDurationSeconds > 0 ? 'time-loss' : 'time-gain'"
-        >
-          {{ signedDuration(summary.deltaDurationSeconds) }}
+    <div>
+      <div class="readout">
+        <div class="readout-cell">
+          <div class="readout-label">Durée</div>
+          <div class="readout-value">{{ duration(summary.durationSeconds) }}</div>
+        </div>
+        <div class="readout-cell">
+          <div class="readout-label">Péages</div>
+          <div class="readout-value">{{ euros(summary.totalCents) }}</div>
+        </div>
+        <div class="readout-cell">
+          <div class="readout-label">Écart temps</div>
+          <div
+              class="readout-value"
+              :class="summary.deltaDurationSeconds > 0 ? 'is-loss' : 'is-gain'"
+          >{{ signedDuration(summary.deltaDurationSeconds) }}</div>
+        </div>
+        <div class="readout-cell">
+          <div class="readout-label">Écart prix</div>
+          <div
+              class="readout-value"
+              :class="summary.deltaCents > 0 ? 'is-loss' : 'is-gain'"
+          >{{ signedEuros(summary.deltaCents) }}</div>
         </div>
       </div>
-      <div class="summary-item">
-        <div class="summary-label">Prix vs rapide</div>
-        <div class="summary-value" :class="summary.deltaCents > 0 ? 'extra' : 'savings'">
-          {{ signedEuros(summary.deltaCents) }}
-        </div>
-      </div>
+      <p class="readout-caption">Écarts mesurés face au trajet le plus rapide.</p>
     </div>
 
     <p v-if="!summary.pricingComplete" class="pricing-warning" role="alert">
-      ⚠️ Tarification partielle : certains péages de ce trajet n'ont pas pu être chiffrés.
+      Tarification partielle : certains péages de ce trajet n’ont pas pu être chiffrés.
+      Le total affiché est un minimum.
     </p>
 
-    <ul class="toll-list">
-      <li v-if="tolls.length === 0" class="toll-item toll-item-none">
-        Aucun péage sur ce trajet.
-      </li>
-      <li
-          v-for="toll in tolls"
-          :key="toll.id"
-          class="toll-item"
-          :class="[`toll-item-${toll.status}`, { 'toll-selected': toll.id === selectedTollId }]"
-          @click="emit('toll-click', toll)"
-      >
-        <span class="toll-item-icon">{{ toll.status === 'kept' ? '✅' : toll.status === 'avoided' ? '🚫' : '❓' }}</span>
-        <span class="toll-item-name">
-          {{ toll.name }}
-          <small>{{ toll.networkName }}{{ toll.detail ? ` · ${toll.detail}` : '' }}</small>
+    <div>
+      <div class="toll-head">
+        <span class="eyebrow">Péages</span>
+        <span class="toll-key">
+          <span class="toll-key-item">
+            <svg class="lane-sign lane-sign-kept" viewBox="0 0 18 18" aria-hidden="true">
+              <path d="M9 4v7.5M5.5 8.5 9 12l3.5-3.5" fill="none" stroke="var(--encre)" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            franchi
+          </span>
+          <span class="toll-key-item">
+            <svg class="lane-sign lane-sign-avoided" viewBox="0 0 18 18" aria-hidden="true">
+              <path d="M5.5 5.5l7 7M12.5 5.5l-7 7" stroke="var(--encre)" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            évité
+          </span>
         </span>
-        <span v-if="toll.ratioLabel" class="toll-item-ratio">{{ toll.ratioLabel }}</span>
-        <span class="toll-item-price">
-          {{ toll.priceCents === null ? '?' : euros(toll.priceCents) }}
-        </span>
-      </li>
-    </ul>
+      </div>
+
+      <ul class="toll-list">
+        <li v-if="tolls.length === 0" class="toll-item toll-item-none">
+          Aucun péage sur ce trajet.
+        </li>
+        <li
+            v-for="toll in tolls"
+            :key="toll.id"
+            class="toll-item"
+            :class="[`toll-item-${toll.status}`, { 'toll-selected': toll.id === selectedTollId }]"
+            @click="emit('toll-click', toll)"
+        >
+          <svg
+              class="lane-sign"
+              :class="`lane-sign-${toll.status}`"
+              viewBox="0 0 18 18"
+              role="img"
+              :aria-label="statusLabel(toll.status)"
+          >
+            <path v-if="toll.status === 'kept'" d="M9 4v7.5M5.5 8.5 9 12l3.5-3.5"
+                  fill="none" stroke="var(--encre)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path v-else-if="toll.status === 'avoided'" d="M5.5 5.5l7 7M12.5 5.5l-7 7"
+                  stroke="var(--encre)" stroke-width="2" stroke-linecap="round"/>
+            <text v-else x="9" y="13.5" text-anchor="middle" fill="var(--encre)"
+                  font-size="12" font-weight="700" font-family="inherit">?</text>
+          </svg>
+
+          <span class="toll-item-name">{{ toll.name }}</span>
+          <span class="toll-item-price">{{ toll.priceCents === null ? '—' : euros(toll.priceCents) }}</span>
+          <span class="toll-item-sub">{{ toll.networkName }}{{ toll.detail ? ` · ${toll.detail}` : '' }}</span>
+          <span class="toll-item-ratio">{{ toll.ratioLabel }}</span>
+        </li>
+      </ul>
+    </div>
   </div>
 </template>
-
-<style scoped lang="less">
-/* Grille et liste stylées globalement dans app.less (#results-panel). */
-#results-panel {
-  .pricing-warning {
-    font-size: .78rem;
-    color: var(--color-warning);
-    background: rgba(245, 158, 11, 0.1);
-    border: 1px solid rgba(245, 158, 11, 0.35);
-    border-radius: var(--radius-sm);
-    padding: .5rem .65rem;
-  }
-
-  /* Franchissement intarifable : ni conservé ni évité, juste signalé */
-  .toll-item-unknown {
-    background: rgba(245, 158, 11, 0.08);
-    border-color: rgba(245, 158, 11, 0.3);
-    color: #92400e;
-  }
-}
-</style>

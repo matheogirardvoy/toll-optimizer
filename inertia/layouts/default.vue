@@ -29,15 +29,15 @@ const showMapboxTokenWarning = import.meta.env.VITE_MAPBOX_TOKEN.length === 0;
 
 <template>
   <header>
-    <span class="header-logo">🛣️ TollOptimizer</span>
+    <span class="header-logo">TollOptimizer</span>
     <span class="header-subtitle">
-      Trouve le trajet le plus rentable entre deux points
+      Quels péages valent leur prix, sur votre trajet.
     </span>
   </header>
 
   <div id="token-warning" v-if="showMapboxTokenWarning">
-    ⚠️ Clé Mapbox non configurée — copie <code>config.example.js</code> vers
-    <code>config.js</code> et renseigne ton token depuis
+    Clé Mapbox non configurée : copiez <code>config.example.js</code> vers
+    <code>config.js</code> et renseignez votre token depuis
     <a href="https://account.mapbox.com/" target="_blank" rel="noopener">account.mapbox.com</a>.
   </div>
 

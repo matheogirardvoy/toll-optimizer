@@ -1,8 +1,8 @@
 import { BaseCommand, args, flags } from '@adonisjs/core/ace'
 import type { CommandOptions } from '@adonisjs/core/types/ace'
-import env from '#start/env'
+import DirectionsClient, { DirectionsError } from '#services/mapbox/directions_client'
+import type { DirectionsRoute } from '#services/mapbox/directions_client'
 import RoutePricer from '#services/pricing/route_pricer'
-import type { RouteLineString } from '#services/pricing/route_pricer'
 import { VEHICLE_CLASSES, type VehicleClass } from '#models/toll_price'
 
 /**
@@ -33,22 +33,21 @@ export default class PriceRoute extends BaseCommand {
   declare threshold: number | undefined
 
   async run() {
-    const token = env.get('VITE_MAPBOX_TOKEN').release()
-
     if (!VEHICLE_CLASSES.includes(this.vehicleClass as VehicleClass)) {
       this.logger.error(`Classe tarifaire invalide : ${this.vehicleClass} (attendu 1 à 5)`)
       this.exitCode = 1
       return
     }
 
-    const geometry = await this.fetchRoute(token)
-    if (!geometry) return
+    const route = await this.fetchRoute()
+    if (!route) return
 
     const pricer = new RoutePricer()
     const pricing = await pricer.price({
-      geometry,
+      geometry: route.geometry,
       vehicleClass: this.vehicleClass as VehicleClass,
       matchThresholdMeters: this.threshold,
+      tollCollections: route.tollCollections,
     })
 
     this.logger.info(`Gares franchies : ${pricing.crossings.length}`)
@@ -84,7 +83,7 @@ export default class PriceRoute extends BaseCommand {
     return `${(cents / 100).toFixed(2)} €`
   }
 
-  private async fetchRoute(token: string): Promise<RouteLineString | null> {
+  private async fetchRoute(): Promise<DirectionsRoute | null> {
     const parse = (value: string, label: string): [number, number] | null => {
       const parts = value.split(',').map((part) => Number.parseFloat(part.trim()))
       if (parts.length !== 2 || parts.some((part) => !Number.isFinite(part))) {
@@ -102,30 +101,19 @@ export default class PriceRoute extends BaseCommand {
       return null
     }
 
-    const params = new URLSearchParams({
-      access_token: token,
-      geometries: 'geojson',
-      overview: 'full',
-    })
-    if (this.noToll) params.set('exclude', 'toll')
-
-    const coords = `${from.join(',')};${to.join(',')}`
-    const response = await fetch(`https://api.mapbox.com/directions/v5/mapbox/driving/${coords}?${params}`)
-    if (!response.ok) {
-      this.logger.error(`Directions API : HTTP ${response.status}`)
-      this.exitCode = 1
-      return null
+    let routes: DirectionsRoute[]
+    try {
+      routes = await new DirectionsClient().fetchRoutes(from, to, { excludeTolls: this.noToll })
+    } catch (error) {
+      if (error instanceof DirectionsError) {
+        this.logger.error(error.message)
+        this.exitCode = 1
+        return null
+      }
+      throw error
     }
 
-    const payload = (await response.json()) as {
-      routes?: Array<{
-        distance: number
-        duration: number
-        geometry: RouteLineString
-      }>
-    }
-
-    const route = payload.routes?.[0]
+    const route = routes[0]
     if (!route) {
       this.logger.error('Aucun itinéraire renvoyé par Mapbox')
       this.exitCode = 1
@@ -133,8 +121,10 @@ export default class PriceRoute extends BaseCommand {
     }
 
     this.logger.info(
-      `Itinéraire : ${(route.distance / 1000).toFixed(0)} km, ${(route.duration / 60).toFixed(0)} min, ${route.geometry.coordinates.length} points`
+      `Itinéraire : ${(route.distance / 1000).toFixed(0)} km, ${(route.duration / 60).toFixed(0)} min, ` +
+        `${route.geometry.coordinates.length} points, ` +
+        `${route.tollCollections?.length ?? 0} annotation(s) de péage`
     )
-    return route.geometry
+    return route
   }
 }

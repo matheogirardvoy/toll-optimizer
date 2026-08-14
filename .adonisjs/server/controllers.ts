@@ -6,7 +6,9 @@
 export const controllers = {
   admin: {
     Dashboard: () => import('#controllers/admin/dashboard_controller'),
+    Duplicates: () => import('#controllers/admin/duplicates_controller'),
     Prices: () => import('#controllers/admin/prices_controller'),
+    StationPrices: () => import('#controllers/admin/station_prices_controller'),
     Stations: () => import('#controllers/admin/stations_controller'),
     Tolls: () => import('#controllers/admin/tolls_controller'),
   },

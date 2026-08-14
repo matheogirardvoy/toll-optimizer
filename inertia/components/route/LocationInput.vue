@@ -5,7 +5,9 @@ import useMapbox, {Feature} from "~/composables/map/useMapbox";
 const props = defineProps<{
   label: string,
   placeholder: string,
-  input: string
+  input: string,
+  /** Rappelle la couleur du marqueur correspondant sur la carte. */
+  marker?: 'start' | 'end'
 }>();
 
 const emit = defineEmits<{
@@ -115,7 +117,9 @@ function select(f: Feature) {
 
 <template>
   <div class="form-group">
-    <label :for="input">{{ label }}</label>
+    <label :for="input">
+      <span v-if="marker" class="field-pin" :class="`field-pin-${marker}`" aria-hidden="true"></span>{{ label }}
+    </label>
     <input
         :id="input"
         v-model="inputText"
@@ -137,7 +141,7 @@ function select(f: Feature) {
           :class="{highlighted: i === highlighted}"
           @mouseenter="highlighted = i"
           @mousedown.prevent="select(f)"
-      ><span v-if="isHistory" class="suggestion-icon">🕘</span>{{ f.place_name }}</li>
+      >{{ f.place_name }}</li>
     </ul>
   </div>
 </template>
@@ -145,28 +149,22 @@ function select(f: Feature) {
 <style scoped lang="less">
 .suggestions {
   li.highlighted {
-    background: #f0f9ff;
-    color: var(--color-primary);
+    background: var(--azur-pale);
   }
 
   .suggestions-title {
-    font-size: .7rem;
+    font-family: var(--font-signal);
+    font-size: .64rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: .05em;
-    color: var(--color-muted);
-    background: var(--color-bg);
+    letter-spacing: .09em;
+    color: var(--ardoise);
+    background: var(--ciel);
     cursor: default;
 
     &:hover {
-      background: var(--color-bg);
-      color: var(--color-muted);
+      background: var(--ciel);
     }
-  }
-
-  .suggestion-icon {
-    margin-right: .4rem;
-    opacity: .6;
   }
 }
 </style>

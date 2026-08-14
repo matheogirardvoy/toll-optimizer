@@ -1,11 +1,23 @@
 <!DOCTYPE html>
-<html>
+<html lang="fr">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title inertia>
-      AdonisJS
+      TollOptimizer
     </title>
+
+    {{--
+      Overpass dérive du Highway Gothic des panneaux routiers : c'est la voix
+      signalétique de l'interface. Overpass Mono porte tous les chiffres
+      (prix, €/h, durées), IBM Plex Sans le texte courant.
+    --}}
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Overpass:wght@400;600;700;800&family=Overpass+Mono:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
 
     @vite(['inertia/app.ts'])
     @inertiaHead()

@@ -333,6 +333,117 @@ test.group('RoutePricer', (group) => {
     assert.equal(pricing.issues[0].type, 'missing-price')
   })
 
+  test('scinde un bloc fermé à la BPV intermédiaire quand la grille l’exige', async ({ assert }) => {
+    const network = await seedNetwork('closed')
+    // Cas Le Bignon → Virsac → Biriatou (A83/A10/A63, tout ASF) : le
+    // règlement réel est une BPV au milieu du bloc ; le couple des
+    // extrémités n'existe pas en grille, celui de l'entrée vers la BPV si.
+    const ticket = await seedStation({
+      name: 'Barrière Ticket',
+      networkId: network.id,
+      gateType: 'Bpv',
+      points: [[4.02, 45.00005]],
+    })
+    const settle = await seedStation({
+      name: 'Barrière Règlement',
+      networkId: network.id,
+      gateType: 'Bpv',
+      points: [[4.14, 45.00005]],
+    })
+    await seedStation({
+      name: 'Barrière Frontière',
+      networkId: network.id,
+      gateType: 'Bpv',
+      points: [[4.26, 45.00005]],
+    })
+    await seedPrice(network, ticket.id, settle.id, 3320)
+
+    const pricing = await new RoutePricer().price({ geometry: MOTORWAY, vehicleClass: 1 })
+
+    assert.equal(pricing.totalCents, 3320)
+    assert.lengthOf(pricing.sections, 1)
+    assert.equal(pricing.sections[0].entry.stationId, ticket.id)
+    assert.equal(pricing.sections[0].exit?.stationId, settle.id)
+    // La frontière sans prix barrière reste une anomalie visible.
+    assert.isFalse(pricing.complete)
+    assert.isTrue(pricing.issues.some((issue) => issue.type === 'unpaired-entry'))
+  })
+
+  test('répare par annotation une section dont les deux gares échappent au corridor', async ({ assert }) => {
+    const network = await seedNetwork('closed')
+    // Cas Le Bignon/Virsac (A83/A10) : les points référentiel des deux BPV
+    // projettent à ~17 m du tracé — hors corridor strict, aucun orphelin,
+    // la section disparaîtrait sans trace. Les annotations `toll_collection`
+    // de Mapbox attestent les franchissements et raniment les deux gares.
+    const entry = await seedStation({
+      name: 'Barrière Entrée Large',
+      networkId: network.id,
+      gateType: 'Bpv',
+      points: [[4.05, 45.00015]],
+    })
+    const exit = await seedStation({
+      name: 'Barrière Sortie Large',
+      networkId: network.id,
+      gateType: 'Bpv',
+      points: [[4.25, 45.00015]],
+    })
+    await seedPrice(network, entry.id, exit.id, 3320)
+
+    const blind = await new RoutePricer().price({ geometry: MOTORWAY, vehicleClass: 1 })
+    assert.lengthOf(blind.crossings, 0)
+
+    const pricing = await new RoutePricer().price({
+      geometry: MOTORWAY,
+      vehicleClass: 1,
+      tollCollections: [{ location: [4.05, 45] }, { location: [4.25, 45] }],
+    })
+
+    assert.isTrue(pricing.complete)
+    assert.equal(pricing.totalCents, 3320)
+    assert.lengthOf(pricing.crossings, 2)
+    assert.lengthOf(pricing.sections, 1)
+    assert.equal(pricing.sections[0].entry.stationId, entry.id)
+    assert.equal(pricing.sections[0].exit?.stationId, exit.id)
+  })
+
+  test('une annotation déjà couverte par un franchissement ne crée pas de doublon', async ({ assert }) => {
+    const network = await seedNetwork('open')
+    const barrier = await seedStation({
+      name: 'Barrière Matchée',
+      networkId: network.id,
+      points: [[4.15, 45.00005]],
+    })
+    await seedPrice(network, barrier.id, null, 250)
+
+    const pricing = await new RoutePricer().price({
+      geometry: MOTORWAY,
+      vehicleClass: 1,
+      tollCollections: [{ location: [4.15, 45] }],
+    })
+
+    assert.isTrue(pricing.complete)
+    assert.equal(pricing.totalCents, 250)
+    assert.lengthOf(pricing.crossings, 1)
+    assert.lengthOf(pricing.sections, 1)
+  })
+
+  test('une annotation sans gare référentiel à proximité est ignorée', async ({ assert }) => {
+    const network = await seedNetwork('closed')
+    // Gare à ~1112 m : hors du rayon d'appariement des annotations (400 m) —
+    // cas des péages étrangers ou absents du référentiel France.
+    await seedStation({ name: 'Gare Lointaine', networkId: network.id, points: [[4.15, 45.01]] })
+
+    const pricing = await new RoutePricer().price({
+      geometry: MOTORWAY,
+      vehicleClass: 1,
+      tollCollections: [{ location: [4.15, 45] }],
+    })
+
+    assert.isTrue(pricing.complete)
+    assert.equal(pricing.totalCents, 0)
+    assert.lengthOf(pricing.crossings, 0)
+  })
+
   test('renvoie un résultat vide pour une géométrie dégénérée', async ({ assert }) => {
     const pricing = await new RoutePricer().price({
       geometry: { type: 'LineString', coordinates: [[4.0, 45]] },

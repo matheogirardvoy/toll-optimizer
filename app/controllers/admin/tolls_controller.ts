@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises'
 import type { HttpContext } from '@adonisjs/core/http'
 import Toll from '#models/toll'
+import TollCollectionMatcher from '#services/mapbox/toll_collection_matcher'
 import TollImportService from '#services/toll_import_service'
+import { matchTollsValidator } from '#validators/tolls'
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -62,6 +64,17 @@ export default class TollsController {
     }
 
     return response.redirect().back()
+  }
+
+  /**
+   * Appariement des points de perception signalés par Mapbox avec le
+   * référentiel local : pour chaque point reçu, le péage le plus proche
+   * (ou null), dans l'ordre de la requête.
+   */
+  async match({ request, response }: HttpContext) {
+    const { points } = await request.validateUsing(matchTollsValidator)
+    const matches = await new TollCollectionMatcher().matchPoints(points)
+    return response.json({ matches })
   }
 
   /**

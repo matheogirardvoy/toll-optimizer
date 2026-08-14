@@ -49,12 +49,38 @@ export type RoutePricing = {
 
 export type RouteKind = 'fastest' | 'alternative' | 'no-toll' | 'hybrid';
 
+/** Péage du référentiel apparié à un point de perception Mapbox. */
+export type TollMatch = {
+    tollId: number;
+    name: string;
+    road: string | null;
+    side: string | null;
+    gateTypeLabel: string | null;
+    laneCount: number | null;
+    stationId: number | null;
+    stationName: string | null;
+    networkName: string | null;
+    distanceMeters: number;
+};
+
+/** Péage annoté par Mapbox sur le tracé, enrichi du référentiel local. */
+export type MapboxToll = {
+    location: LngLat;
+    /** `toll_booth` (gare/barrière) ou `toll_gantry` (portique flux libre). */
+    kind: string | null;
+    name: string | null;
+    /** null : aucun péage de la base à proximité du point. */
+    match: TollMatch | null;
+};
+
 export type EvaluatedRoute = {
     kind: RouteKind;
     durationSeconds: number;
     distanceMeters: number;
     geometry: RouteGeometry;
     pricing: RoutePricing;
+    /** Péages signalés par Mapbox le long du tracé, dans l'ordre du parcours. */
+    mapboxTolls: MapboxToll[];
     scoreMinutes: number;
     excludedStations: string[];
 };
@@ -114,7 +140,7 @@ export class OptimizeError extends Error {}
  * Jeton XSRF déposé en cookie par Adonis Shield : à renvoyer en en-tête sur
  * toute requête mutante hors formulaires Inertia.
  */
-function xsrfToken(): string | null {
+export function xsrfToken(): string | null {
     const match = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
     return match ? decodeURIComponent(match[1]) : null;
 }

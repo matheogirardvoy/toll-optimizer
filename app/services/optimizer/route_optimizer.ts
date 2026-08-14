@@ -5,7 +5,10 @@ import DirectionsClient, { MAX_EXCLUDE_POINTS } from '#services/mapbox/direction
 import type {
   DirectionsGateway,
   DirectionsRoute,
+  TollCollectionPoint,
 } from '#services/mapbox/directions_client'
+import TollCollectionMatcher from '#services/mapbox/toll_collection_matcher'
+import type { TollMatch } from '#services/mapbox/toll_collection_matcher'
 import RoutePricer from '#services/pricing/route_pricer'
 import type {
   CrossedStation,
@@ -71,12 +74,21 @@ export type OptimizeQuery = {
 
 export type RouteKind = 'fastest' | 'alternative' | 'no-toll' | 'hybrid'
 
+/** Péage annoté par Mapbox sur le tracé, enrichi du référentiel local. */
+export type MapboxToll = TollCollectionPoint & {
+  /** null : aucun péage de la base à proximité du point. */
+  match: TollMatch | null
+}
+
 export type EvaluatedRoute = {
   kind: RouteKind
   durationSeconds: number
   distanceMeters: number
   geometry: RouteLineString
   pricing: RoutePricing
+
+  /** Péages signalés par Mapbox le long du tracé, dans l'ordre du parcours. */
+  mapboxTolls: MapboxToll[]
 
   /** Coût généralisé : durée + prix converti en minutes via rho. */
   scoreMinutes: number
@@ -174,7 +186,8 @@ type Exclusions = {
 export default class RouteOptimizer {
   constructor(
     private directions: DirectionsGateway = new DirectionsClient(),
-    private pricer: RoutePricer = new RoutePricer()
+    private pricer: RoutePricer = new RoutePricer(),
+    private tollMatcher: TollCollectionMatcher = new TollCollectionMatcher()
   ) {}
 
   async optimize(query: OptimizeQuery): Promise<OptimizeResult> {
@@ -443,7 +456,13 @@ export default class RouteOptimizer {
       geometry: route.geometry,
       vehicleClass: query.vehicleClass,
       date: query.date,
+      tollCollections: route.tollCollections,
     })
+
+    const collections = route.tollCollections ?? []
+    const matches = await this.tollMatcher.matchPoints(
+      collections.map((collection) => collection.location)
+    )
 
     return {
       kind,
@@ -451,6 +470,10 @@ export default class RouteOptimizer {
       distanceMeters: route.distance,
       geometry: route.geometry,
       pricing,
+      mapboxTolls: collections.map((collection, index) => ({
+        ...collection,
+        match: matches[index] ?? null,
+      })),
       scoreMinutes: route.duration / 60 + pricing.totalCents / rho,
       excludedStations,
     }
