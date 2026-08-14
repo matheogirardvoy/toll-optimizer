@@ -1,5 +1,9 @@
 <script setup lang="ts">
-/** RouteSwitcher — bascule entre les variantes d'itinéraire évaluées. */
+/**
+ * RouteSwitcher — bascule entre les variantes d'itinéraire évaluées.
+ * La variante active prend la forme d'un panneau de direction, dans la couleur
+ * de son tracé sur la carte : le panneau tient lieu de légende.
+ */
 
 export type RouteVariantKey = 'best' | 'fastest' | 'no-toll';
 
@@ -44,53 +48,20 @@ function kilometers(meters: number): string {
     <button
         v-for="tab in tabStats"
         :key="tab.key"
-        class="route-tab"
-        :class="{ 'tab-active': tab.key === activeVariant }"
+        class="variant"
+        :class="[`variant-${tab.key}`, { 'is-active': tab.key === activeVariant }]"
         type="button"
         role="tab"
         :aria-selected="tab.key === activeVariant"
         @click="emit('switch', tab.key)"
     >
-      <span class="tab-label">{{ tab.label }}</span>
+      <span class="variant-label">{{ tab.label }}</span>
       <span
-          class="tab-cost"
-          :title="tab.pricingComplete ? undefined : 'Prix sous-estimé : certains péages n’ont pas pu être chiffrés'"
-      >{{ euros(tab.priceCents) }}<span v-if="!tab.pricingComplete" aria-hidden="true"> ⚠️</span></span>
-      <span class="tab-time">{{ duration(tab.durationSeconds) }}</span>
-      <span class="tab-distance">{{ kilometers(tab.distanceMeters) }}</span>
-      <span v-if="tab.detail" class="tab-detail">{{ tab.detail }}</span>
+          class="variant-price"
+          :title="tab.pricingComplete ? undefined : 'Prix minimum : certains péages n’ont pas pu être chiffrés'"
+      ><span v-if="!tab.pricingComplete" aria-label="au moins">≥ </span>{{ euros(tab.priceCents) }}</span>
+      <span class="variant-detail">{{ tab.detail }}</span>
+      <span class="variant-meta">{{ duration(tab.durationSeconds) }} · {{ kilometers(tab.distanceMeters) }}</span>
     </button>
   </div>
 </template>
-
-<style scoped lang="less">
-/* Structure et états dans app.less (#route-switcher) ; seuls les éléments
-   ajoutés ici sont stylés localement. */
-#route-switcher {
-  .route-tab {
-    .tab-cost {
-      white-space: nowrap;
-    }
-
-    .tab-distance {
-      font-size: 11px;
-      color: var(--color-muted);
-      white-space: nowrap;
-    }
-
-    .tab-detail {
-      font-size: 10px;
-      color: var(--color-muted);
-      font-weight: 500;
-      line-height: 1.2;
-    }
-
-    &.tab-active {
-      .tab-distance,
-      .tab-detail {
-        color: rgba(255, 255, 255, 0.8);
-      }
-    }
-  }
-}
-</style>

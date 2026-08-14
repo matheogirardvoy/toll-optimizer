@@ -17,8 +17,12 @@ const emit = defineEmits<{
   (e: 'select', sectionKey: string): void;
 }>();
 
-const KEPT_COLOR = '#10b981';
-const AVOIDED_COLOR = '#ef4444';
+// Remplissage vif, liseré encré : à 2,4:1 sur blanc, l'aplat seul ne tiendrait
+// pas le 3:1 exigé d'un élément graphique — c'est le liseré qui porte le bord.
+const KEPT_COLOR = '#1ebe64';
+const AVOIDED_COLOR = '#ff6b5a';
+const KEPT_EDGE = '#0a7a3d';
+const AVOIDED_EDGE = '#c42e22';
 
 /** Marges intérieures du tracé (place pour l'axe Y et les libellés X). */
 const PLOT = { top: 18, right: 12, bottom: 18, left: 44 };
@@ -54,6 +58,7 @@ type Bar = {
   y: number;
   baseline: number;
   color: string;
+  edge: string;
   label: string;
   xLabel: string;
 };
@@ -110,6 +115,7 @@ const bars = computed<Bar[]>(() => {
       y: yFor(displayValue),
       baseline: PLOT.top + plotHeight.value,
       color: decision.keptInBest ? KEPT_COLOR : AVOIDED_COLOR,
+      edge: decision.keptInBest ? KEPT_EDGE : AVOIDED_EDGE,
       label: `${clamped ? '≥ ' : ''}${Math.round(clamped ? displayValue : value)} €/h`,
       xLabel: name.length > 22 ? `${name.slice(0, 21)}…` : name,
     };
@@ -170,24 +176,33 @@ const hoveredBar = computed(() => bars.value[hovered.value] ?? null);
 
 <template>
   <div class="chart-panel">
-    <div class="chart-panel-title">📊 Graphique de rentabilité (€ / heure par péage)</div>
+    <div class="chart-panel-title">Rentabilité par péage — € par heure gagnée</div>
 
     <div v-if="chartable.length > 0" class="chart-legend">
       <span class="chart-legend-item">
-        <span class="chart-legend-swatch" :style="{ background: KEPT_COLOR }"></span>
-        ✅ Rentable, conservé
+        <span
+            class="chart-legend-swatch"
+            :style="{ background: KEPT_COLOR, borderColor: KEPT_EDGE }"
+        ></span>
+        sous le seuil, franchi
       </span>
       <span class="chart-legend-item">
-        <span class="chart-legend-swatch" :style="{ background: AVOIDED_COLOR }"></span>
-        🚫 Non rentable, évité
+        <span
+            class="chart-legend-swatch"
+            :style="{ background: AVOIDED_COLOR, borderColor: AVOIDED_EDGE }"
+        ></span>
+        au-dessus, évité
       </span>
-      <span class="chart-legend-item chart-legend-threshold">— Votre seuil</span>
+      <span class="chart-legend-item chart-legend-threshold">
+        <span class="chart-legend-rule"></span>
+        votre seuil
+      </span>
     </div>
 
     <div ref="wrapper" class="chart-wrapper">
       <p v-if="chartable.length === 0" class="chart-empty">
         {{ decisions.length === 0
-            ? 'Lancez une optimisation pour analyser la rentabilité de chaque péage.'
+            ? 'Optimisez un itinéraire pour comparer chaque péage à votre seuil.'
             : 'Aucun tronçon comparable sur ce trajet.' }}
       </p>
 
@@ -216,8 +231,8 @@ const hoveredBar = computed(() => bars.value[hovered.value] ?? null);
               :d="barPath(bar)"
               :fill="bar.color"
               :fill-opacity="bar.decision.reliable ? (hovered === index ? 1 : 0.9) : 0.45"
-              :stroke="hovered === index ? bar.color : 'none'"
-              stroke-width="1.5"
+              :stroke="bar.edge"
+              :stroke-width="hovered === index ? 2.5 : 1.25"
           />
           <text
               :x="bar.x + bar.barWidth / 2"
@@ -279,10 +294,10 @@ const hoveredBar = computed(() => bars.value[hovered.value] ?? null);
           −{{ euros(hoveredBar.decision.savedCents ?? 0) }}
         </div>
         <div class="chart-tooltip-row">
-          {{ hoveredBar.decision.keptInBest ? '✅ Conservé' : '🚫 Évité' }} par la recommandation
+          {{ hoveredBar.decision.keptInBest ? 'Franchi' : 'Évité' }} par la recommandation
         </div>
         <div v-if="!hoveredBar.decision.reliable" class="chart-tooltip-warning">
-          ⚠️ Comparaison incertaine (tarification partielle)
+          Comparaison incertaine : tarification partielle.
         </div>
       </div>
     </div>
@@ -295,7 +310,7 @@ const hoveredBar = computed(() => bars.value[hovered.value] ?? null);
     display: flex;
     gap: 1rem;
     font-size: .72rem;
-    color: var(--color-muted);
+    color: var(--ardoise);
     flex-shrink: 0;
 
     &-item {
@@ -304,15 +319,22 @@ const hoveredBar = computed(() => bars.value[hovered.value] ?? null);
       gap: .35rem;
     }
 
+    /* La teinte du liseré arrive en style inline ; sans `border-style` ici,
+       elle n'aurait rien à colorer. */
     &-swatch {
       width: 12px;
       height: 8px;
-      border-radius: 2px;
+      border: 1px solid;
+      border-radius: 1px;
       flex-shrink: 0;
     }
 
-    &-threshold {
-      color: var(--color-text);
+    /* Le trait de seuil, repris tel quel du graphique. */
+    &-rule {
+      width: 14px;
+      height: 0;
+      border-top: 2px dashed var(--soleil-encre);
+      flex-shrink: 0;
     }
   }
 
@@ -325,35 +347,39 @@ const hoveredBar = computed(() => bars.value[hovered.value] ?? null);
       justify-content: center;
       height: 100%;
       font-size: .82rem;
-      color: var(--color-muted);
-      font-style: italic;
+      color: var(--ardoise);
     }
 
     .chart-gridline {
-      stroke: var(--color-border);
+      stroke: var(--trait);
       stroke-width: 1;
     }
 
     .chart-tick {
+      font-family: var(--font-mono);
       font-size: 10px;
-      fill: var(--color-muted);
+      fill: var(--ardoise);
     }
 
     .chart-value {
+      font-family: var(--font-mono);
       font-size: 10px;
-      font-weight: 600;
-      fill: var(--color-text);
+      font-weight: 700;
+      fill: var(--encre);
     }
 
     .chart-threshold {
-      stroke: var(--color-text);
-      stroke-width: 1;
+      stroke: var(--soleil-encre);
+      stroke-width: 2;
+      stroke-dasharray: 5 4;
     }
 
     .chart-threshold-label {
+      font-family: var(--font-signal);
       font-size: 10px;
-      font-weight: 600;
-      fill: var(--color-text);
+      font-weight: 700;
+      letter-spacing: .04em;
+      fill: var(--soleil-encre);
     }
 
     .chart-tooltip {
@@ -362,27 +388,29 @@ const hoveredBar = computed(() => bars.value[hovered.value] ?? null);
       pointer-events: none;
       min-width: 170px;
       max-width: 220px;
-      background: var(--color-surface);
-      border: 1px solid var(--color-border);
+      background: var(--blanc);
+      border: 1px solid var(--trait);
       border-radius: var(--radius-sm);
       box-shadow: var(--shadow-md);
       padding: .5rem .6rem;
       font-size: .74rem;
-      color: var(--color-muted);
+      color: var(--ardoise);
 
       &-value {
-        font-size: .85rem;
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+        font-size: .9rem;
         font-weight: 700;
-        color: var(--color-text);
+        color: var(--encre);
       }
 
       &-name {
-        color: var(--color-text);
+        color: var(--encre);
         margin-bottom: .25rem;
       }
 
       &-warning {
-        color: var(--color-warning);
+        color: var(--soleil-encre);
         margin-top: .25rem;
       }
     }

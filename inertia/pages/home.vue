@@ -3,7 +3,6 @@ import {computed, ref, watch} from "vue";
 import RouteForm from "~/components/route/RouteForm.vue";
 import MapView, {DisplayedRoute} from "~/components/map/MapView.vue";
 import ChartPanel from "~/components/map/ChartPanel.vue";
-import LegendCard from "~/components/sidebar/LegendCard.vue";
 import ThresholdCard from "~/components/map/ThresholdCard.vue";
 import RouteSwitcher, {RouteTabStat, RouteVariantKey} from "~/components/sidebar/RouteSwitcher.vue";
 import ResultsPanel, {ResultsSummary, TollDecision} from "~/components/sidebar/ResultsPanel.vue";
@@ -74,7 +73,7 @@ function parseVehicleClass(value: string): VehicleClass {
 async function optimise() {
   const store = useLocationStore();
   if (!store.start || !store.end) {
-    emitter.emit('routeFormMessage', { message: 'Veuillez saisir un départ et une arrivée.', type: 'error' });
+    emitter.emit('routeFormMessage', { message: 'Renseignez un départ et une arrivée.', type: 'error' });
     return;
   }
 
@@ -90,7 +89,7 @@ async function optimise() {
   } catch (error) {
     const message = error instanceof OptimizeError
         ? error.message
-        : 'Optimisation impossible : erreur inattendue.';
+        : 'Optimisation impossible. Réessayez dans un instant.';
     emitter.emit('routeFormMessage', { message, type: 'error' });
   } finally {
     loading.value = false;
@@ -111,9 +110,9 @@ const activeRoute = computed<EvaluatedRoute|null>(() => {
 function bestDetail(optimized: OptimizeResult): string | null {
   switch (optimized.best.kind) {
     case 'fastest':
-      return '= le + rapide';
+      return 'c’est aussi le plus rapide';
     case 'no-toll':
-      return '= sans péage';
+      return 'c’est aussi le trajet sans péage';
     case 'alternative':
       return 'itinéraire alternatif';
     case 'hybrid': {
@@ -144,11 +143,11 @@ const tabStats = computed<RouteTabStat[]>(() => {
   });
 
   const tabs: RouteTabStat[] = [
-    makeTab('best', '⭐ Recommandé', result.value.best, bestDetail(result.value)),
-    makeTab('fastest', '⚡ Le + rapide', result.value.fastest, null),
+    makeTab('best', 'Recommandé', result.value.best, bestDetail(result.value)),
+    makeTab('fastest', 'Le plus rapide', result.value.fastest, null),
   ];
   if (result.value.noToll) {
-    tabs.push(makeTab('no-toll', '🆓 Sans péage', result.value.noToll, null));
+    tabs.push(makeTab('no-toll', 'Sans péage', result.value.noToll, null));
   }
   return tabs;
 });
@@ -275,6 +274,7 @@ watch(result, (optimized) => {
     geometry: route.geometry,
     tolls: route.mapboxTolls,
     sections: route.pricing.sections,
+    crossings: route.pricing.crossings,
   });
 
   const routes: DisplayedRoute[] = [
@@ -302,18 +302,18 @@ watch(result, (optimized) => {
           v-model:maxCost="maxCost"
           v-model:gainMinutes="gainMinutes"
           :threshold-label="thresholdLabel"
+          :compact="result !== null"
       />
 
       <button class="btn-optimise" type="button" :disabled="loading" @click="optimise">
-        {{ loading ? 'Calcul en cours…' : 'Optimiser →' }}
+        {{ loading ? 'Analyse en cours…' : 'Optimiser l’itinéraire' }}
       </button>
 
       <div :id="routeFormMessage.type + '-message'" v-if="routeFormMessage?.message" role="alert">{{ routeFormMessage.message }}</div>
 
-      <LegendCard/>
-
       <RouteSwitcher
           v-if="tabStats.length > 0"
+          class="reveal"
           :tab-stats="tabStats"
           :active-variant="activeVariant"
           @switch="switchToVariant"
@@ -321,6 +321,7 @@ watch(result, (optimized) => {
 
       <ResultsPanel
           v-if="summary"
+          class="reveal"
           :summary="summary"
           :tolls="tolls"
           :selected-toll-id="selectedTollId"
@@ -334,8 +335,16 @@ watch(result, (optimized) => {
     <MapView ref="map"/>
 
     <div id="loading-overlay" v-if="loading">
-      <div class="spinner"></div>
-      <p>Analyse des péages en cours…</p>
+      <svg class="route-draw" viewBox="0 0 240 72" aria-hidden="true">
+        <!-- Le lit gris est la couleur du trajet par défaut sur la carte :
+             l'azur qui s'y dépose est l'itinéraire optimisé qui le remplace. -->
+        <path class="route-draw-bed" d="M12 56C40 56 52 22 84 22s40 26 68 24 44-24 64-28"/>
+        <path class="route-draw-line" pathLength="1"
+              d="M12 56C40 56 52 22 84 22s40 26 68 24 44-24 64-28"/>
+        <circle class="route-draw-toll route-draw-toll-a" cx="84" cy="22" r="5"/>
+        <circle class="route-draw-toll route-draw-toll-b" cx="152" cy="46" r="5"/>
+      </svg>
+      <p>Analyse des péages</p>
     </div>
 
     <ChartPanel

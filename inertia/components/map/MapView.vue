@@ -5,7 +5,7 @@ import {storeToRefs} from "pinia";
 import {useLocationStore} from "~/composables/stores/useLocationStore";
 import useMapbox, {Feature, RouteTollCollection} from "~/composables/map/useMapbox";
 import useTolls from "~/composables/engine/useTolls";
-import {LngLat, MapboxToll, RouteGeometry, RouteTollSection, TollMatch} from "~/composables/engine/useOptimizer";
+import {CrossedStation, LngLat, MapboxToll, RouteGeometry, RouteTollSection, TollMatch} from "~/composables/engine/useOptimizer";
 import {RouteVariantKey} from "~/components/sidebar/RouteSwitcher.vue";
 
 export type DisplayedRoute = {
@@ -15,6 +15,8 @@ export type DisplayedRoute = {
   tolls: MapboxToll[];
   /** Sections tarifées de cette variante (pricing serveur). */
   sections: RouteTollSection[];
+  /** Gares franchies selon le pricer (matching référentiel sur le tracé). */
+  crossings: CrossedStation[];
 };
 
 /** Propriétés plates : les sources GeoJSON Mapbox aplatissent les objets imbriqués. */
@@ -23,6 +25,10 @@ type TollProperties = {
   name: string;
   /** false : signalé par Mapbox mais introuvable dans la base. */
   matched: boolean;
+  /** false : franchissement détecté par le référentiel, sans annotation Mapbox. */
+  annotated: boolean;
+  /** true : une annotation Mapbox trop éloignée pour être appariée a été absorbée. */
+  strayAnnotation: boolean;
   type: string | null;
   road: string | null;
   side: string | null;
@@ -70,8 +76,28 @@ type SectionFeature = {
  */
 const METERS_PER_DEGREE_LAT = 111_195;
 
+/**
+ * Fusion d'une annotation Mapbox restée sans correspondance (au-delà des
+ * 400 m du matching serveur) avec la gare du référentiel qu'on ajoute à la
+ * carte : Mapbox annote parfois la chaussée très en amont de la barrière
+ * (La Gravelle : 741 m entre l'annotation et le point data.gouv) — sans
+ * fusion, la même gare porterait deux points. Ne concerne que les
+ * annotations sans `match` face aux gares sans annotation : un couple
+ * appariés/à apparier reste intact (Pertuis annotée ne masque pas
+ * Meyrargues à 60 m).
+ */
+const STRAY_ANNOTATION_MERGE_METERS = 800;
+
 function euros(cents: number): string {
   return `${(cents / 100).toFixed(2).replace('.', ',')} €`;
+}
+
+/** Distance entre deux points, même métrique locale que `cumulativeMeters`. */
+function distanceMeters(a: LngLat, b: LngLat): number {
+  const meanLat = ((a[1] + b[1]) / 2) * Math.PI / 180;
+  const dx = (b[0] - a[0]) * METERS_PER_DEGREE_LAT * Math.cos(meanLat);
+  const dy = (b[1] - a[1]) * METERS_PER_DEGREE_LAT;
+  return Math.hypot(dx, dy);
 }
 
 /** Distance cumulée le long du tracé, en mètres (projection locale). */
@@ -222,6 +248,14 @@ function buildTollCard(p: TollProperties): string {
     p.laneCount && ['Voies', `${p.laneCount} voie${p.laneCount > 1 ? 's' : ''}`],
   ].filter(Boolean) as [string, string][];
 
+  const note = !p.matched
+    ? 'Signalé par Mapbox — absent du référentiel local'
+    : p.annotated
+      ? null
+      : p.strayAnnotation
+        ? 'Détectée par le référentiel local — annotation Mapbox trop éloignée pour être appariée'
+        : 'Détectée par le référentiel local — non signalée par Mapbox';
+
   return `
     <div class="toll-card">
       <div class="toll-card-header">
@@ -237,7 +271,7 @@ function buildTollCard(p: TollProperties): string {
             <span class="toll-card-value">${escapeHtml(value)}</span>
           </div>`).join('')}
       </div>` : ''}
-      ${p.matched ? '' : '<div class="toll-card-note">Signalé par Mapbox — absent du référentiel local</div>'}
+      ${note ? `<div class="toll-card-note">${note}</div>` : ''}
     </div>`;
 }
 
@@ -251,6 +285,8 @@ function tollToFeature(toll: MapboxToll): TollFeature {
     properties: {
       name: match?.name ?? toll.name ?? 'Péage',
       matched: match !== null,
+      annotated: true,
+      strayAnnotation: false,
       type: match?.gateTypeLabel ?? kindLabel,
       road: match?.road ?? null,
       side: match?.side ?? null,
@@ -261,22 +297,88 @@ function tollToFeature(toll: MapboxToll): TollFeature {
   };
 }
 
+/**
+ * Feature d'une gare franchie sans annotation Mapbox appariée : le point
+ * vient du référentiel local (première porte appariée au tracé).
+ */
+function crossingToFeature(
+  crossing: CrossedStation,
+  point: {longitude: number; latitude: number},
+  strayAnnotation: boolean,
+): TollFeature {
+  return {
+    type: 'Feature',
+    geometry: {type: 'Point', coordinates: [point.longitude, point.latitude]},
+    properties: {
+      name: crossing.stationName,
+      matched: true,
+      annotated: false,
+      strayAnnotation,
+      type: null,
+      road: null,
+      side: null,
+      laneCount: null,
+      stationName: null,
+      networkName: crossing.networkName,
+    },
+  };
+}
+
+/**
+ * Péages d'une variante : les annotations Mapbox enrichies, complétées des
+ * gares que le pricer a détectées sur le tracé mais qu'aucune annotation
+ * appariée ne représente (Bourges, Montluçon… absentes des données
+ * routières Mapbox) — le miroir du repli `rescueByAnnotations` du pricer,
+ * côté affichage. Chaque gare ajoutée absorbe l'éventuelle annotation
+ * restée sans correspondance à moins de `STRAY_ANNOTATION_MERGE_METERS`,
+ * pour ne pas afficher deux points pour la même barrière.
+ */
+function routeTollFeatures(route: DisplayedRoute): TollFeature[] {
+  const annotatedStationIds = new Set(
+    route.tolls.flatMap((toll) => (toll.match?.stationId != null ? [toll.match.stationId] : [])),
+  );
+
+  const absorbed = new Set<MapboxToll>();
+  const missing = route.crossings.flatMap((crossing) => {
+    if (annotatedStationIds.has(crossing.stationId)) return [];
+    const point = crossing.points[0];
+    if (!point) return [];
+
+    let stray: MapboxToll | null = null;
+    let strayDistance = STRAY_ANNOTATION_MERGE_METERS;
+    for (const toll of route.tolls) {
+      if (toll.match !== null || absorbed.has(toll)) continue;
+      const distance = distanceMeters(toll.location, [point.longitude, point.latitude]);
+      if (distance <= strayDistance) {
+        stray = toll;
+        strayDistance = distance;
+      }
+    }
+    if (stray) absorbed.add(stray);
+
+    return [crossingToFeature(crossing, point, stray !== null)];
+  });
+
+  return [
+    ...route.tolls.filter((toll) => !absorbed.has(toll)).map(tollToFeature),
+    ...missing,
+  ];
+}
+
 /** Remplace les péages affichés (dédupliqués par coordonnées entre variantes). */
-function displayTolls(tolls: MapboxToll[]) {
+function displayTolls(features: TollFeature[]) {
   const source = mapbox.getSource('tolls') as GeoJSONSource | undefined;
   if (!source) return;
 
   const seen = new Set<string>();
-  const features = tolls
-    .filter((toll) => {
-      const key = toll.location.join(',');
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .map(tollToFeature);
+  const deduped = features.filter((feature) => {
+    const key = feature.geometry.coordinates.join(',');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
-  source.setData({type: 'FeatureCollection', features});
+  source.setData({type: 'FeatureCollection', features: deduped});
 
   // Le nouvel affichage n'a d'intérêt que si la layer est visible
   if (!tollsVisible.value) toggleTolls();
@@ -289,7 +391,7 @@ function displayTolls(tolls: MapboxToll[]) {
  */
 async function showPreviewTolls(collections: RouteTollCollection[]) {
   const generation = ++tollsGeneration;
-  displayTolls(collections.map((collection) => ({...collection, match: null})));
+  displayTolls(collections.map((collection) => tollToFeature({...collection, match: null})));
   if (collections.length === 0) return;
 
   let matches: (TollMatch | null)[];
@@ -302,7 +404,7 @@ async function showPreviewTolls(collections: RouteTollCollection[]) {
 
   // Une optimisation ou un nouveau tracé a remplacé l'affichage entre-temps
   if (generation !== tollsGeneration) return;
-  displayTolls(collections.map((collection, index) => ({
+  displayTolls(collections.map((collection, index) => tollToFeature({
     ...collection,
     match: matches[index] ?? null,
   })));
@@ -345,7 +447,7 @@ onMounted(() => {
       source: 'tolls',
       paint: {
         'circle-radius': 6,
-        'circle-color': '#e11d48',
+        'circle-color': '#ff6b5a',
         'circle-stroke-width': 2,
         'circle-stroke-color': '#fff',
       },
@@ -370,28 +472,32 @@ onMounted(() => {
     mapbox.addLayer({
       id: 'default-route-casing', type: 'line', source: 'default-route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint:  { 'line-color': '#475569', 'line-width': 7, 'line-opacity': 0.9 },
+      paint:  { 'line-color': '#182142', 'line-width': 7, 'line-opacity': 0.9 },
     }, 'tolls-layer');
     mapbox.addLayer({
       id: 'default-route', type: 'line', source: 'default-route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint:  { 'line-color': '#94a3b8', 'line-width': 4 },
+      paint:  { 'line-color': '#98a3be', 'line-width': 4 },
     }, 'tolls-layer');
 
     // Les trois variantes de l'optimisation vivent dans une seule source ;
     // la bascule d'onglet ne fait que changer les filtres des layers, sans
     // re-charger de données ni bouger la caméra.
+    // Chaque variante a sa couleur, comme une ligne sur un plan : azur pour
+    // l'itinéraire retenu, menthe pour la variante sans péage, lavande pour la
+    // référence rapide. Ce sont les couleurs des panneaux du sélecteur, dans la
+    // barre latérale — le panneau tient donc lieu de légende.
     const variantColor = [
       'match', ['get', 'variant'],
-      'fastest', '#94a3b8',
-      'no-toll', '#f59e0b',
-      '#3b82f6',
+      'fastest', '#a17dff',
+      'no-toll', '#1ebe64',
+      '#3d8fff',
     ] as const;
     const variantCasing = [
       'match', ['get', 'variant'],
-      'fastest', '#475569',
-      'no-toll', '#b45309',
-      '#1d4ed8',
+      'fastest', '#5b2bc4',
+      'no-toll', '#0a7a3d',
+      '#0b4fb0',
     ] as const;
 
     mapbox.addSource('variant-routes', {type: 'geojson', data: { type: 'FeatureCollection', features: [] }});
@@ -422,7 +528,10 @@ onMounted(() => {
       id: 'toll-sections-line', type: 'line', source: 'toll-sections',
       filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'variant'], 'best']],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#7c3aed', 'line-width': 6, 'line-opacity': 0.7 },
+      // Opaque, et plus étroit que le liseré : à 75 % l'ambre se mélangeait au
+      // liseré bleu du tracé et virait à l'olive. Posé plein sur 5 px, il laisse
+      // dépasser 1 px de liseré de chaque côté — un ruban ambre franc, cerné.
+      paint: { 'line-color': '#ff9f1c', 'line-width': 5, 'line-opacity': 1 },
     }, 'tolls-layer');
     mapbox.addLayer({
       id: 'toll-sections-label', type: 'symbol', source: 'toll-sections',
@@ -435,9 +544,9 @@ onMounted(() => {
         'text-anchor': 'bottom',
       },
       paint: {
-        'text-color': '#6d28d9',
+        'text-color': '#8a5200',
         'text-halo-color': '#ffffff',
-        'text-halo-width': 1.6,
+        'text-halo-width': 1.8,
       },
     });
 
@@ -463,13 +572,13 @@ onMounted(() => {
 
 function defineStartLocation(feature: Feature) {
   if (startMarker) startMarker.remove();
-  startMarker = new Marker({ color: '#3b82f6' }).setLngLat(feature.center).addTo(mapbox);
+  startMarker = new Marker({ color: '#3d8fff' }).setLngLat(feature.center).addTo(mapbox);
   drawRoute();
 }
 
 function defineEndLocation(feature: Feature) {
   if (endMarker) endMarker.remove();
-  endMarker = new Marker({ color: '#ef4444' }).setLngLat(feature.center).addTo(mapbox);
+  endMarker = new Marker({ color: '#ff6b5a' }).setLngLat(feature.center).addTo(mapbox);
   drawRoute();
 }
 
@@ -533,7 +642,7 @@ function showRoutes(routes: DisplayedRoute[], active: RouteVariantKey) {
   // Les péages viennent déjà enrichis de l'optimiseur ; l'union des
   // variantes est affichée, comme les tracés eux-mêmes.
   tollsGeneration++;
-  displayTolls(routes.flatMap((route) => route.tolls));
+  displayTolls(routes.flatMap(routeTollFeatures));
   // Les portions payantes de toutes les variantes sont chargées d'un coup ;
   // seule celle de la variante active est visible (filtres).
   (mapbox.getSource('toll-sections') as GeoJSONSource).setData({
@@ -570,8 +679,8 @@ defineExpose({ showRoutes, setActiveVariant, focusPoint });
 
 <template>
   <div class="map-wrapper">
-    <button v-if="hasRoute" class="layer-toggle" @click="toggleTolls">
-      {{ tollsVisible ? 'Cacher' : 'Afficher' }} les péages du trajet
+    <button v-if="hasRoute" class="layer-toggle" type="button" @click="toggleTolls">
+      {{ tollsVisible ? 'Masquer les péages' : 'Afficher les péages' }}
     </button>
     <div id="map" ref="map"></div>
   </div>
@@ -595,13 +704,20 @@ defineExpose({ showRoutes, setActiveVariant, focusPoint });
     top: 10px;
     left: 10px;
     z-index: 1;
-    padding: 6px 12px;
-    background: #fff;
-    border: 1px solid #ccc;
-    border-radius: 4px;
+    padding: 7px 12px;
+    background: var(--blanc);
+    border: 1px solid var(--trait);
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: 13px;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+    font-family: var(--font-signal);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--ardoise);
+    box-shadow: var(--shadow-sm);
+
+    &:hover { color: var(--encre); border-color: var(--brume); }
   }
 
   /* Popup péage — :deep() car le HTML est injecté par Mapbox, hors du scope Vue */
@@ -647,31 +763,34 @@ defineExpose({ showRoutes, setActiveVariant, focusPoint });
         width: 10px;
         height: 10px;
         border-radius: 50%;
-        background: #e11d48;
+        background: var(--corail);
         border: 2px solid #fff;
-        box-shadow: 0 0 0 1px var(--color-border);
+        box-shadow: 0 0 0 1px var(--trait);
       }
 
-      /* Popup de portion tarifée : pastille assortie à la ligne violette */
+      /* Popup de portion tarifée : pastille assortie à la ligne orange */
       &-dot-price {
-        background: #7c3aed;
+        background: var(--ambre);
       }
 
       &-name {
         font-size: 13px;
-        color: var(--color-text);
+        color: var(--encre);
         line-height: 1.3;
       }
 
+      /* Le numéro de route, posé comme sur un panneau. */
       &-road {
         flex: none;
         margin-left: auto;
         padding: 2px 7px;
-        border-radius: 999px;
-        background: var(--color-primary);
-        color: #fff;
+        border-radius: var(--radius-sm);
+        background: var(--azur);
+        color: var(--encre);
+        font-family: var(--font-signal);
         font-size: 11px;
-        font-weight: 600;
+        font-weight: 700;
+        letter-spacing: .03em;
       }
 
       &-body {
@@ -689,11 +808,11 @@ defineExpose({ showRoutes, setActiveVariant, focusPoint });
       }
 
       &-label {
-        color: var(--color-muted);
+        color: var(--ardoise);
       }
 
       &-value {
-        color: var(--color-text);
+        color: var(--encre);
         font-weight: 500;
         text-align: right;
       }

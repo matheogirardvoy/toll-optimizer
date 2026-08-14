@@ -1,25 +1,83 @@
-/* ─── CSS Custom Properties ─────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════
+   TollOptimizer — système visuel
+   ───────────────────────────────────────────────────────────────────────────
+   Le sujet n'est pas le péagiste, c'est le départ : l'interface emprunte sa
+   langue à l'affiche de voyage — aplats francs, soleil, bord de mer. La
+   couleur porte un sens, mais elle le porte gaiement.
+
+     azur     itinéraire retenu, réseau payant, actions principales
+     menthe   voie libre : itinéraire sans péage, péage franchi
+     corail   fermé : péage évité
+     soleil   l'argent : seuil €/h, prix le long du tracé
+     lavande  la référence : l'itinéraire le plus rapide
+
+   Règle d'aplat : un aplat vif porte toujours l'encre, jamais du blanc.
+   C'est le geste de l'affiche, et c'est ce qui garde 4.5:1 partout —
+   ces couleurs sont trop claires pour du texte blanc.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 :root {
-  --color-bg:         #f1f5f9;
-  --color-surface:    #ffffff;
-  --color-border:     #e2e8f0;
-  --color-text:       #1e293b;
-  --color-muted:      #64748b;
-  --color-primary:    #3b82f6;
-  --color-primary-dk: #2563eb;
-  --color-success:    #10b981;
-  --color-danger:     #ef4444;
-  --color-warning:    #f59e0b;
+  /* ── Les cinq couleurs ────────────────────────────────────────────────────
+     vif    : aplats, et tracés sur la carte
+     -encre : la même couleur en texte sur blanc, où le ton vif tomberait
+              sous 4.5:1
+     -pale  : fonds de message
+     Les tracés Mapbox reprennent ces valeurs en dur : une couleur de calque
+     n'est pas du CSS et ne peut pas lire une variable.                    */
+  --azur:         #3d8fff;
+  --azur-encre:   #0b4fb0;
+  --azur-pale:    #e4efff;
+  --menthe:       #1ebe64;
+  --menthe-encre: #0a7a3d;
+  --corail:       #ff6b5a;
+  --corail-encre: #c42e22;
+  --corail-pale:  #ffe9e6;
+  --soleil:       #ffc93c;
+  --soleil-encre: #8a5200;
+  --soleil-pale:  #fff4d9;
+  --lavande:      #a17dff;
 
-  --radius-sm:  6px;
-  --radius-md:  10px;
-  --radius-lg:  14px;
+  /* Le jaune disparaît en trait fin sur fond clair : les portions payantes
+     de la carte prennent l'ambre, qui tient la ligne. */
+  --ambre:        #ff9f1c;
 
-  --shadow-sm:  0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
-  --shadow-md:  0 4px 12px rgba(0,0,0,.10);
+  /* ── Neutres : encre et ciel ──────────────────────────────────────────── */
+  --encre:   #182142;
+  --ardoise: #55607f;
+  --brume:   #98a3be;
+  --ciel:    #e8f0f5;
+  --trait:   #d3dfe8;
+  --blanc:   #ffffff;
 
-  --font-sans:  system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --sidebar-w: 360px;
+  /* ── Alias historiques : l'admin et les pages existantes s'y adossent ─────
+     L'admin pose du blanc sur `--color-primary` ; l'azur vif n'y tiendrait
+     que 3,2:1. L'alias vise donc le ton encré, qui remonte à 7,6:1 — même
+     famille, même palette, sans toucher aux pages de l'admin.            */
+  --color-bg:         var(--ciel);
+  --color-surface:    var(--blanc);
+  --color-border:     var(--trait);
+  --color-text:       var(--encre);
+  --color-muted:      var(--ardoise);
+  --color-primary:    var(--azur-encre);
+  --color-primary-dk: #083c88;
+  --color-success:    var(--menthe-encre);
+  --color-danger:     var(--corail-encre);
+  --color-warning:    var(--soleil-encre);
+
+  /* ── Formes : l'affiche découpe, elle n'arrondit guère ────────────────── */
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 7px;
+
+  --shadow-sm: 0 1px 2px rgba(24, 33, 66, .07);
+  --shadow-md: 0 6px 20px rgba(24, 33, 66, .14);
+
+  /* ── Typographie ──────────────────────────────────────────────────────── */
+  --font-signal: 'Overpass', 'Archivo', system-ui, sans-serif;
+  --font-sans:   'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-mono:   'Overpass Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  --sidebar-w: 380px;
 }
 
 /* ─── Reset / Base ─────────────────────────────────────────────────────── */
@@ -34,67 +92,100 @@
 
 body {
   font-family: var(--font-sans);
-  background:  var(--color-bg);
-  color:       var(--color-text);
+  font-size:   .875rem;
+  line-height: 1.45;
+  background:  var(--ciel);
+  color:       var(--encre);
   height:      100dvh;
   overflow:    hidden;
   display:     flex;
   flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* L'encre est le seul cerne qui tienne sur les cinq aplats comme sur le ciel. */
+:focus-visible {
+  outline: 2px solid var(--encre);
+  outline-offset: 2px;
+}
+
+/* Libellé de section : la ligne d'annonce d'un panneau. */
+.eyebrow {
+  font-family: var(--font-signal);
+  font-size:   .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color:       var(--ardoise);
 }
 
 /* ─── Header ───────────────────────────────────────────────────────────── */
 header {
-  background:  var(--color-surface);
-  border-bottom: 1px solid var(--color-border);
-  padding:     0 1.25rem;
-  height:      52px;
+  background:  var(--blanc);
+  border-bottom: 1px solid var(--trait);
+  padding:     0 1rem;
+  height:      58px;
   display:     flex;
   align-items: center;
-  gap:         .75rem;
+  gap:         .9rem;
   flex-shrink: 0;
-  box-shadow:  var(--shadow-sm);
   z-index:     10;
 
+  /* Le logo est le premier aplat de la page : azur, encre, filet en retrait. */
   .header-logo {
-    font-size:   1.4rem;
-    font-weight: 800;
-    color:       var(--color-primary);
-    letter-spacing: -.5px;
+    position:      relative;
+    display:       inline-block;
+    padding:       .42rem .7rem;
+    background:    var(--azur);
+    border-radius: var(--radius-md);
+    font-family:   var(--font-signal);
+    font-size:     .95rem;
+    font-weight:   800;
+    letter-spacing: -.01em;
+    color:         var(--encre);
+    text-decoration: none;
+
+    &::before {
+      content:  '';
+      position: absolute;
+      inset:    3px;
+      border:   1.5px solid rgba(24, 33, 66, .32);
+      border-radius: 2px;
+      pointer-events: none;
+    }
   }
 
   .header-subtitle {
-    font-size:  .78rem;
-    color:      var(--color-muted);
-    border-left: 1px solid var(--color-border);
-    padding-left: .75rem;
+    font-size: .8rem;
+    color:     var(--ardoise);
   }
 }
 
-/* ─── Token warning banner ──────────────────────────────────────────────── */
+/* ─── Bandeau d'alerte token ───────────────────────────────────────────── */
 #token-warning {
-  background: #fef3c7;
-  border-bottom: 1px solid #fde68a;
-  padding:    .55rem 1.25rem;
-  font-size:  .82rem;
-  color:      #92400e;
-  flex-shrink: 0;
+  background:    var(--soleil-pale);
+  border-bottom: 1px solid #f0d79a;
+  padding:       .55rem 1rem;
+  font-size:     .8rem;
+  color:         var(--soleil-encre);
+  flex-shrink:   0;
 
-  a { color: #b45309; font-weight: 600; }
+  a    { color: var(--soleil-encre); font-weight: 600; }
+  code { font-family: var(--font-mono); font-size: .95em; }
 }
 
-/* ─── Main layout ──────────────────────────────────────────────────────── */
+/* ─── Charpente ────────────────────────────────────────────────────────── */
 .layout {
-  display:   flex;
-  flex:      1;
-  overflow:  hidden;
+  display:  flex;
+  flex:     1;
+  overflow: hidden;
 }
 
-/* ─── Sidebar ──────────────────────────────────────────────────────────── */
 .sidebar {
   width:        var(--sidebar-w);
   min-width:    var(--sidebar-w);
-  background:   var(--color-surface);
-  border-right: 1px solid var(--color-border);
+  background:   var(--ciel);
+  border-right: 1px solid var(--trait);
   display:      flex;
   flex-direction: column;
   overflow:     hidden;
@@ -102,309 +193,554 @@ header {
   .sidebar-scroll {
     flex:       1;
     overflow-y: auto;
-    padding:    1.25rem;
+    padding:    1rem;
     display:    flex;
     flex-direction: column;
-    gap:        1.25rem;
+    gap:        .85rem;
   }
 }
 
-/* ─── Cards ────────────────────────────────────────────────────────────── */
+/* ─── Cartes (contrat partagé avec l'admin) ────────────────────────────── */
 .card {
-  background:    var(--color-surface);
-  border:        1px solid var(--color-border);
+  background:    var(--blanc);
+  border:        1px solid var(--trait);
   border-radius: var(--radius-md);
-  padding:       1rem;
-  box-shadow:    var(--shadow-sm);
+  padding:       .9rem;
 
   .card-title {
-    font-size:   .72rem;
+    font-family: var(--font-signal);
+    font-size:   .68rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: .06em;
-    color:       var(--color-muted);
-    margin-bottom: .75rem;
+    letter-spacing: .1em;
+    color:       var(--ardoise);
+    margin-bottom: .7rem;
   }
 }
 
-/* ─── Form ─────────────────────────────────────────────────────────────── */
+/* ─── Formulaires ──────────────────────────────────────────────────────── */
 .form-group {
-  position:  relative;
-  margin-bottom: .75rem;
+  position: relative;
+  margin-bottom: .7rem;
 
   &:last-child { margin-bottom: 0; }
 }
 
-label {
+label,
+.field-label {
   display:     block;
-  font-size:   .78rem;
-  font-weight: 600;
-  color:       var(--color-muted);
+  font-family: var(--font-signal);
+  font-size:   .66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color:       var(--ardoise);
   margin-bottom: .3rem;
 }
 
 input[type="text"],
-input[type="number"] {
-  width:         100%;
-  padding:       .55rem .75rem;
-  border:        1.5px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-size:     .9rem;
-  font-family:   inherit;
-  color:         var(--color-text);
-  background:    var(--color-surface);
-  transition:    border-color .15s;
-  outline:       none;
-
-  &:focus {
-    border-color: var(--color-primary);
-    box-shadow:   0 0 0 3px rgba(59,130,246,.15);
-  }
-}
-
+input[type="number"],
 select {
   width:         100%;
-  padding:       .55rem .75rem;
-  border:        1.5px solid var(--color-border);
+  padding:       .5rem .65rem;
+  border:        1px solid var(--trait);
   border-radius: var(--radius-sm);
-  font-size:     .9rem;
+  font-size:     .875rem;
   font-family:   inherit;
-  color:         var(--color-text);
-  background:    var(--color-surface);
-  transition:    border-color .15s;
+  color:         var(--encre);
+  background:    var(--blanc);
+  transition:    border-color .12s, box-shadow .12s;
   outline:       none;
-  cursor:        pointer;
 
   &:focus {
-    border-color: var(--color-primary);
-    box-shadow:   0 0 0 3px rgba(59,130,246,.15);
+    border-color: var(--azur);
+    box-shadow:   inset 0 0 0 1px var(--azur);
   }
 }
 
-/* Autocomplete suggestions */
+select { cursor: pointer; }
+
+/* Suggestions de géocodage */
 .suggestions {
   position:      absolute;
-  top:           calc(100% + 2px);
+  top:           calc(100% + 3px);
   left:          0; right: 0;
-  background:    var(--color-surface);
-  border:        1.5px solid var(--color-border);
+  background:    var(--blanc);
+  border:        1px solid var(--trait);
   border-radius: var(--radius-sm);
   box-shadow:    var(--shadow-md);
   list-style:    none;
   z-index:       1000;
-  max-height:    220px;
+  max-height:    240px;
   overflow-y:    auto;
 
   li {
-    padding:    .55rem .75rem;
-    font-size:  .85rem;
-    cursor:     pointer;
-    border-bottom: 1px solid var(--color-border);
+    padding:   .5rem .65rem;
+    font-size: .83rem;
+    cursor:    pointer;
+    border-bottom: 1px solid var(--ciel);
 
     &:last-child { border-bottom: none; }
-    &:hover { background: #f0f9ff; color: var(--color-primary); }
+    &:hover { background: var(--azur-pale); }
   }
 }
 
-/* ─── Threshold group ──────────────────────────────────────────────────── */
-.threshold-row {
-  display:    flex;
-  align-items: center;
-  gap:        .5rem;
-  font-size:  .88rem;
-  flex-wrap:  wrap;
+/* Pastille rappelant, dans le libellé, la couleur du marqueur sur la carte. */
+.field-pin {
+  display:        inline-block;
+  width:          8px;
+  height:         8px;
+  margin-right:   .35rem;
+  vertical-align: baseline;
 
-  input[type="number"] {
-    width:    72px;
-    flex-shrink: 0;
-    text-align: center;
+  &-start { background: var(--azur); border-radius: 50%; }
+
+  /* Arrivée : le chevron des panneaux de direction. */
+  &-end {
+    background: var(--corail);
+    clip-path:  polygon(0 0, 55% 0, 100% 50%, 55% 100%, 0 100%);
   }
+}
 
-  .threshold-display {
-    margin-left: auto;
-    background:  #eff6ff;
-    color:       var(--color-primary-dk);
+/* ─── Classe de véhicule : les pictogrammes du portique de péage ───────── */
+.class-picker {
+  display: flex;
+  gap:     4px;
+
+  &-option {
+    flex:          1;
+    padding:       .4rem 0;
+    background:    var(--blanc);
+    border:        1px solid var(--trait);
+    border-radius: var(--radius-sm);
+    font-family:   var(--font-mono);
+    font-size:     .9rem;
+    font-weight:   700;
+    color:         var(--ardoise);
+    cursor:        pointer;
+    transition:    background .12s, border-color .12s, color .12s;
+
+    &:hover { border-color: var(--brume); }
+
+    &.is-selected {
+      background:   var(--azur);
+      border-color: var(--azur);
+      color:        var(--encre);
+    }
+  }
+}
+
+.class-caption {
+  margin-top: .35rem;
+  font-size:  .78rem;
+  color:      var(--ardoise);
+}
+
+/* ─── L'instrument : ce que vaut une heure ─────────────────────────────────
+   Le seul aplat solaire de la barre latérale, et le seul endroit où l'on
+   règle quelque chose : la page se souvient de lui.
+   Posé après `.card`, à spécificité égale, il en reprend le fond et le bord.
+   ─────────────────────────────────────────────────────────────────────── */
+.tariff {
+  background: var(--soleil);
+  border:     none;
+
+  .card-title { color: rgba(24, 33, 66, .74); }
+
+  &-readout {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
     font-weight: 700;
-    font-size:   .82rem;
-    padding:     .2rem .55rem;
-    border-radius: 99px;
-    border:      1px solid #bfdbfe;
-    white-space: nowrap;
+    font-size:   2.4rem;
+    line-height: 1;
+    color:       var(--encre);
+    letter-spacing: -.02em;
+    transition:  font-size .3s ease;
+  }
+
+  &-sentence {
+    margin-top: .55rem;
+    font-size:  .85rem;
+    color:      var(--encre);
+    line-height: 2;
+  }
+
+  /*
+   * Les deux nombres se règlent dans la phrase, sans quitter la phrase.
+   * Qualifié par `input` : le sélecteur global `input[type="number"]` est plus
+   * spécifique qu'une simple classe et l'emporterait autrement.
+   */
+  input&-input {
+    width:         3.1rem;
+    padding:       .1rem .2rem;
+    border:        none;
+    border-bottom: 2px solid rgba(24, 33, 66, .45);
+    border-radius: 0;
+    background:    transparent;
+    font-family:   var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size:     .95rem;
+    font-weight:   700;
+    color:         var(--encre);
+    text-align:    center;
+
+    /* En saisie, le nombre se détache de l'aplat au lieu de s'y fondre. */
+    &:focus {
+      background:  var(--blanc);
+      box-shadow:  none;
+      border-color: var(--encre);
+    }
+
+    /* Les flèches natives cassent l'alignement de la phrase. */
+    &::-webkit-outer-spin-button,
+    &::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    -moz-appearance: textfield;
+  }
+
+  &-help {
+    margin-top: .55rem;
+    font-size:  .78rem;
+    color:      rgba(24, 33, 66, .74);
+  }
+
+  /* Une fois le résultat affiché, l'instrument cède la place au verdict. */
+  &.is-compact {
+    .tariff-readout { font-size: 1.35rem; }
+    .tariff-help    { display: none; }
   }
 }
 
-/* ─── Optimise button ──────────────────────────────────────────────────── */
+/* ─── Bouton principal ─────────────────────────────────────────────────── */
 .btn-optimise {
   width:         100%;
-  padding:       .7rem 1rem;
-  background:    var(--color-primary);
-  color:         #fff;
+  padding:       .75rem 1rem;
+  /*
+   * En encre, et non en azur : le bouton tombe juste au-dessus du panneau de
+   * la variante retenue, lui aussi azur. Deux aplats de même teinte empilés
+   * se lisaient comme deux boutons. L'encre sépare l'action du verdict, et
+   * donne à la colonne le seul point d'ancrage sombre de la page.
+   */
+  background:    var(--encre);
+  color:         var(--blanc);
   border:        none;
-  border-radius: var(--radius-sm);
-  font-size:     1rem;
+  border-radius: var(--radius-md);
+  font-family:   var(--font-signal);
+  font-size:     .92rem;
   font-weight:   700;
-  font-family:   inherit;
+  letter-spacing: .04em;
+  text-transform: uppercase;
   cursor:        pointer;
-  transition:    background .15s, transform .1s;
-  letter-spacing: .02em;
+  transition:    background .12s;
 
-  &:hover  { background: var(--color-primary-dk); }
-  &:active { transform: scale(.98); }
+  &:hover:not(:disabled) { background: var(--azur-encre); }
+
   &:disabled {
-    background: #93c5fd;
+    background: var(--brume);
+    color:      var(--encre);
     cursor:     not-allowed;
-    transform:  none;
   }
 }
 
-/* ─── Error message ────────────────────────────────────────────────────── */
-#error-message {
-  background:    #fef2f2;
-  border:        1px solid #fecaca;
-  border-radius: var(--radius-sm);
-  padding:       .65rem .85rem;
-  font-size:     .83rem;
-  color:         #b91c1c;
-}
-
-/* ─── Warning message ──────────────────────────────────────────────────── */
+/* ─── Messages ─────────────────────────────────────────────────────────── */
+#error-message,
 #warning-message {
-  background:    #fffbeb;
-  border:        1px solid #fde68a;
   border-radius: var(--radius-sm);
-  padding:       .65rem .85rem;
-  font-size:     .83rem;
-  color:         #92400e;
+  padding:       .6rem .75rem;
+  font-size:     .82rem;
 }
 
-/* ─── Legend ───────────────────────────────────────────────────────────── */
-.legend {
-  display:   flex;
-  flex-wrap: wrap;
-  gap:       .6rem;
-  font-size: .78rem;
-  color:     var(--color-muted);
+#error-message {
+  background: var(--corail-pale);
+  border:     1px solid #f6c6c0;
+  color:      var(--corail-encre);
+}
 
-  .legend-item {
-    display:     flex;
-    align-items: center;
-    gap:         .4rem;
-  }
+#warning-message {
+  background: var(--soleil-pale);
+  border:     1px solid #f0d79a;
+  color:      var(--soleil-encre);
+}
 
-  .legend-swatch {
-    width: 28px; height: 5px;
-    border-radius: 3px;
-    flex-shrink: 0;
+/* ═══ Sélecteur d'itinéraire ════════════════════════════════════════════
+   La variante active devient un panneau de direction, dans la couleur de
+   son tracé sur la carte : le panneau tient lieu de légende.
+   ═══════════════════════════════════════════════════════════════════════ */
+#route-switcher {
+  display:        flex;
+  flex-direction: column;
+  gap:            5px;
 
-    &.std { background: #94a3b8; }
-    &.opt { background: var(--color-primary); }
-    &.free { background: #f59e0b; }
-  }
+  .variant {
+    position:      relative;
+    display:       grid;
+    grid-template-columns: 1fr auto;
+    align-items:   baseline;
+    gap:           .1rem .6rem;
+    width:         100%;
+    padding:       .6rem .7rem;
+    background:    var(--blanc);
+    border:        1px solid var(--trait);
+    border-left:   3px solid var(--brume);
+    border-radius: var(--radius-sm);
+    font-family:   inherit;
+    text-align:    left;
+    color:         var(--encre);
+    cursor:        pointer;
+    transition:    border-color .12s, background .12s;
 
-  .legend-dot {
-    width: 10px; height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
+    &:hover:not(.is-active) { background: var(--blanc); border-color: var(--brume); }
 
-    &.kept    { background: var(--color-success); }
-    &.avoided { background: var(--color-danger); }
+    &-label {
+      font-family: var(--font-signal);
+      font-size:   .74rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    &-price {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      font-size:   1rem;
+      white-space: nowrap;
+      justify-self: end;
+    }
+
+    &-meta,
+    &-detail {
+      font-size: .76rem;
+      color:     var(--ardoise);
+    }
+
+    &-meta {
+      font-family: var(--font-mono);
+      white-space: nowrap;
+      justify-self: end;
+    }
+
+    /* Repère de couleur des variantes inactives */
+    &-best     { border-left-color: var(--azur); }
+    &-fastest  { border-left-color: var(--lavande); }
+    &-no-toll  { border-left-color: var(--menthe); }
+
+    /* ── Le panneau ──────────────────────────────────────────────────────
+       Une seule encre, jamais atténuée : ces aplats plafonnent vers 5:1,
+       et toute transparence ferait passer le texte sous le seuil. La
+       hiérarchie tient donc au corps et à la graisse.
+       ────────────────────────────────────────────────────────────────── */
+    &.is-active {
+      border-color: transparent;
+      border-left-width: 1px;
+      padding:      .85rem .9rem;
+      color:        var(--encre);
+
+      &::before {
+        content:  '';
+        position: absolute;
+        inset:    4px;
+        border:   1.5px solid rgba(24, 33, 66, .3);
+        border-radius: 2px;
+        pointer-events: none;
+      }
+
+      .variant-price  { font-size: 1.5rem; }
+      .variant-meta,
+      .variant-detail { color: var(--encre); }
+    }
+
+    &-best.is-active    { background: var(--azur); }
+    &-fastest.is-active { background: var(--lavande); }
+    &-no-toll.is-active { background: var(--menthe); }
   }
 }
 
-/* ─── Results panel ────────────────────────────────────────────────────── */
+/* ═══ Résultat ══════════════════════════════════════════════════════════ */
 #results-panel {
   display:        flex;
   flex-direction: column;
-  gap:            1.25rem;
+  gap:            .8rem;
+
+  /* L'espacement vient du `gap` ; la marge du titre ferait double emploi. */
+  .card-title { margin-bottom: 0; }
 }
 
-.summary-grid {
-  display:  grid;
-  grid-template-columns: 1fr 1fr;
-  gap:      .6rem;
+/* Tableau d'affichage : quatre valeurs séparées par des filets. */
+.readout {
+  display: flex;
+  border:  1px solid var(--trait);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
 
-  .summary-item {
-    background:    var(--color-bg);
-    border-radius: var(--radius-sm);
-    padding:       .6rem .75rem;
-    text-align:    center;
+  &-cell {
+    flex:       1;
+    min-width:  0;
+    padding:    .5rem .4rem;
+    text-align: center;
+    border-left: 1px solid var(--trait);
 
-    .summary-label {
-      font-size:   .7rem;
-      font-weight: 600;
-      color:       var(--color-muted);
-      text-transform: uppercase;
-      letter-spacing: .05em;
-      margin-bottom: .2rem;
-    }
+    &:first-child { border-left: none; }
+  }
 
-    .summary-value {
-      font-size:   1.1rem;
-      font-weight: 800;
-      color:       var(--color-text);
+  &-label {
+    font-family: var(--font-signal);
+    font-size:   .6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color:       var(--ardoise);
+    white-space: nowrap;
+  }
 
-      &.savings   { color: var(--color-success); }
-      &.extra     { color: var(--color-warning); }
-      &.time-gain { color: var(--color-success); }
-      &.time-loss { color: var(--color-warning); }
-    }
+  &-value {
+    margin-top:  .15rem;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size:   .95rem;
+    white-space: nowrap;
+
+    &.is-gain { color: var(--menthe-encre); }
+    &.is-loss { color: var(--corail-encre); }
   }
 }
 
-/* Toll list */
+.readout-caption {
+  margin-top: .35rem;
+  font-size:  .74rem;
+  color:      var(--ardoise);
+}
+
+.pricing-warning {
+  border-radius: var(--radius-sm);
+  padding:       .55rem .7rem;
+  font-size:     .78rem;
+  background:    var(--soleil-pale);
+  border:        1px solid #f0d79a;
+  color:         var(--soleil-encre);
+}
+
+/* ═══ Les péages, en panneaux de voie ═══════════════════════════════════
+   Flèche verte : la voie est ouverte, on franchit le péage.
+   Croix rouge  : la voie est fermée, l'itinéraire l'évite.
+   ═══════════════════════════════════════════════════════════════════════ */
+.toll-head {
+  display:         flex;
+  align-items:     baseline;
+  justify-content: space-between;
+  gap:             .5rem;
+  margin-bottom:   .5rem;
+}
+
+.toll-key {
+  display:   flex;
+  gap:       .6rem;
+  font-size: .7rem;
+  color:     var(--ardoise);
+
+  &-item {
+    display:     flex;
+    align-items: center;
+    gap:         .25rem;
+  }
+}
+
+.lane-sign {
+  flex:          none;
+  width:         18px;
+  height:        18px;
+  border-radius: 2px;
+  display:       block;
+
+  &-kept    { background: var(--menthe); }
+  &-avoided { background: var(--corail); }
+  &-unknown { background: var(--ambre); }
+}
+
 .toll-list {
   list-style: none;
   display:    flex;
   flex-direction: column;
-  gap:        .4rem;
-  margin-top: .75rem;
+  gap:        3px;
 
   .toll-item {
-    display:       flex;
+    display:       grid;
+    grid-template-columns: auto 1fr auto;
     align-items:   center;
-    gap:           .5rem;
-    font-size:     .83rem;
-    padding:       .45rem .65rem;
+    column-gap:    .55rem;
+    padding:       .45rem .55rem;
+    border:        1px solid var(--trait);
+    border-left:   3px solid var(--trait);
     border-radius: var(--radius-sm);
-    border:        1px solid transparent;
+    background:    var(--blanc);
     cursor:        pointer;
-    transition:    background .15s, transform .15s;
+    transition:    background .12s, border-color .12s;
 
-    &:hover {
-      background:    rgba(251, 191, 36, 0.12);
-      transform:     translateX(4px);
-      border-left:   3px solid #fbbf24;
-    }
+    &:hover { border-color: var(--brume); }
+
+    &-kept    { border-left-color: var(--menthe); }
+    &-avoided { border-left-color: var(--corail); }
+    &-unknown { border-left-color: var(--ambre); }
 
     &.toll-selected {
-      background:    rgba(251, 191, 36, 0.22);
-      border-left:   3px solid #f59e0b;
-      font-weight:   600;
+      background:   var(--azur-pale);
+      border-color: var(--azur);
     }
 
-    /* Concaténation LESS : &-kept → .toll-item-kept, etc. */
-    &-kept    { background: #f0fdf4; border-color: #bbf7d0; color: #166534; }
-    &-avoided { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
-    &-none    { color: var(--color-muted); font-style: italic; font-size: .85rem; }
-    &-icon    { flex-shrink: 0; }
-    &-name    {
-      flex: 1;
-
-      small { opacity: .65; font-size: .8em; }
+    &-name {
+      grid-column: 2;
+      grid-row:    1;
+      font-size:   .83rem;
+      font-weight: 500;
+      line-height: 1.25;
     }
-    &-price   { font-weight: 700; white-space: nowrap; }
-    &-ratio   {
-      font-size:     .75rem;
-      font-weight:   600;
-      background:    rgba(0,0,0,.06);
-      padding:       .1rem .4rem;
-      border-radius: 99px;
-      white-space:   nowrap;
+
+    &-sub {
+      grid-column: 2;
+      grid-row:    2;
+      font-size:   .72rem;
+      color:       var(--ardoise);
+    }
+
+    &-price {
+      grid-column: 3;
+      grid-row:    1;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      font-size:   .88rem;
+      white-space: nowrap;
+      justify-self: end;
+    }
+
+    &-ratio {
+      grid-column: 3;
+      grid-row:    2;
+      font-family: var(--font-mono);
+      font-size:   .72rem;
+      color:       var(--ardoise);
+      white-space: nowrap;
+      justify-self: end;
+    }
+
+    .lane-sign { grid-column: 1; grid-row: 1 / span 2; align-self: center; }
+
+    &-none {
+      display:    block;
+      padding:    .6rem;
+      border-style: dashed;
+      border-left-width: 1px;
+      color:      var(--ardoise);
+      font-size:  .82rem;
+      cursor:     default;
+      text-align: center;
+
+      &:hover { border-color: var(--trait); }
     }
   }
 }
 
-/* ─── Main content area (map + chart) ─────────────────────────────────── */
+/* ─── Carte ────────────────────────────────────────────────────────────── */
 .main {
   flex:     1;
   display:  flex;
@@ -413,30 +749,30 @@ select {
   position: relative;
 }
 
-/* Map */
 #map {
-  flex:     1;
-  width:    100%;
+  flex:       1;
+  width:      100%;
   min-height: 0;
 }
 
-/* Chart panel */
+/* ─── Graphique de rentabilité ─────────────────────────────────────────── */
 .chart-panel {
-  background:    var(--color-surface);
-  border-top:    1px solid var(--color-border);
-  padding:       .9rem 1.1rem;
-  height:        220px;
-  flex-shrink:   0;
-  display:       flex;
+  background:  var(--blanc);
+  border-top:  1px solid var(--trait);
+  padding:     .8rem 1rem;
+  height:      224px;
+  flex-shrink: 0;
+  display:     flex;
   flex-direction: column;
-  gap:           .4rem;
+  gap:         .45rem;
 
   .chart-panel-title {
-    font-size:   .72rem;
+    font-family: var(--font-signal);
+    font-size:   .68rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: .06em;
-    color:       var(--color-muted);
+    letter-spacing: .1em;
+    color:       var(--ardoise);
     flex-shrink: 0;
   }
 
@@ -451,146 +787,115 @@ select {
   }
 }
 
-/* ─── Loading overlay ──────────────────────────────────────────────────── */
+/* ─── Voile de calcul : l'itinéraire se trace ──────────────────────────────
+   Le geste du produit lui-même, plutôt qu'une barre de progression : la route
+   se dessine sur son lit gris — la couleur du trajet par défaut sur la carte —
+   et chaque péage s'allume quand le tracé l'atteint.
+   ─────────────────────────────────────────────────────────────────────── */
 #loading-overlay {
   position:       absolute;
   inset:          0;
-  background:     rgba(255,255,255,.75);
+  background:     rgba(232, 240, 245, .78);
   display:        flex;
   flex-direction: column;
   align-items:    center;
   justify-content: center;
-  gap:            .75rem;
+  gap:            .9rem;
   z-index:        50;
   backdrop-filter: blur(2px);
 
-  .spinner {
-    width:   40px; height: 40px;
-    border:  4px solid var(--color-border);
-    border-top-color: var(--color-primary);
-    border-radius: 50%;
-    animation: spin .75s linear infinite;
+  .route-draw {
+    width:  240px;
+    height: 72px;
+
+    &-bed,
+    &-line {
+      fill:            none;
+      stroke-width:    4;
+      stroke-linecap:  round;
+      stroke-linejoin: round;
+    }
+
+    &-bed { stroke: var(--brume); }
+
+    /* `path-length="1"` normalise la courbe : le tracé s'anime sans qu'on ait
+       à en mesurer la longueur réelle. */
+    &-line {
+      stroke:           var(--azur);
+      stroke-dasharray: 1;
+      animation:        route-draw 2s ease-in-out infinite;
+    }
+
+    /*
+     * Chaque état de repos est écrit ici, et non dans une dernière keyframe :
+     * sous `prefers-reduced-motion` la règle globale ramène l'animation à
+     * .01ms, l'élément retombe sur son style de base, et un `fill` absent
+     * virerait au noir.
+     */
+    &-toll {
+      fill:             var(--corail);
+      stroke:           var(--blanc);
+      stroke-width:     2;
+      transform-box:    fill-box;
+      transform-origin: center;
+    }
+
+    /* Les deux péages partagent la timeline du tracé au lieu d'un
+       `animation-delay`, qui les désynchroniserait dès la deuxième boucle. */
+    &-toll-a { animation: toll-light-a 2s ease-in-out infinite; }
+    &-toll-b { animation: toll-light-b 2s ease-in-out infinite; }
   }
 
   p {
-    font-size:   .88rem;
-    color:       var(--color-muted);
+    font-family: var(--font-signal);
+    font-size:   .8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color:       var(--ardoise);
   }
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
+/* Le tracé s'achève plein et s'y tient : la boucle respire au lieu de repartir
+   sèchement, et l'instant final reste le bon état de repos. */
+@keyframes route-draw {
+  0%        { stroke-dashoffset: 1; }
+  70%, 100% { stroke-dashoffset: 0; }
+}
 
-/* ─── Mapbox popup ─────────────────────────────────────────────────────── */
-.popup-toll {
-  font-family: var(--font-sans);
-  font-size: .82rem;
+@keyframes toll-light-a {
+  0%, 22%   { transform: scale(.45); fill: var(--brume); }
+  32%, 100% { transform: scale(1);   fill: var(--corail); }
+}
 
-  /* Concaténation LESS : &-header → .popup-toll-header, etc. */
-  &-header {
-    font-size:   .9rem;
-    font-weight: 700;
-    margin-bottom: .25rem;
-  }
+@keyframes toll-light-b {
+  0%, 43%   { transform: scale(.45); fill: var(--brume); }
+  53%, 100% { transform: scale(1);   fill: var(--corail); }
+}
 
-  &-highway {
-    font-size:   .75rem;
-    color:       var(--color-muted);
-    margin-bottom: .4rem;
-  }
+/* ─── Apparition du résultat ───────────────────────────────────────────── */
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
 
-  &-detail { margin-bottom: .15rem; }
+.reveal { animation: panel-in .32s ease-out both; }
 
-  &-ratio {
-    margin-top:    .5rem;
-    font-weight:   700;
-    padding:       .2rem .5rem;
-    border-radius: 4px;
-    display:       inline-block;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
   }
 }
 
-.ratio-ok { background: #d1fae5; color: #065f46; }
-.ratio-ko { background: #fee2e2; color: #991b1b; }
-
-/* ─── Toll markers (custom Mapbox GL markers) ──────────────────────────── */
-.toll-marker {
-  width:         22px; height: 22px;
-  border-radius: 50%;
-  border:        3px solid #fff;
-  box-shadow:    0 1px 4px rgba(0,0,0,.35);
-  cursor:        pointer;
-  transition:    transform .15s;
-
-  &:hover { transform: scale(1.25); }
-}
-
-.toll-kept    { background: var(--color-success); }
-.toll-avoided { background: var(--color-danger); }
-
-/* ─── Route switcher tab bar ────────────────────────────────────────────── */
-#route-switcher {
-  display:        flex;
-  flex-direction: row;
-  gap:            8px;
-  padding:        12px 16px;
-  background:     var(--color-surface);
-  border:         1px solid var(--color-border);
-  border-radius:  var(--radius-md);
-  box-shadow:     var(--shadow-sm);
-
-  .route-tab {
-    flex:           1;
-    display:        flex;
-    flex-direction: column;
-    align-items:    center;
-    gap:            2px;
-    background:     var(--color-bg);
-    border:         1.5px solid var(--color-border);
-    border-radius:  10px;
-    padding:        10px 14px;
-    font-size:      13px;
-    font-family:    inherit;
-    color:          var(--color-text);
-    cursor:         pointer;
-    transition:     background .15s, border-color .15s;
-
-    &:hover:not(.tab-active) {
-      background: #e2e8f0;
-    }
-
-    &.tab-active {
-      background:   var(--color-primary);
-      color:        #fff;
-      font-weight:  600;
-      border-color: var(--color-primary);
-
-      .tab-label,
-      .tab-time { color: rgba(255,255,255,.80); }
-    }
-
-    .tab-label {
-      font-size:    11px;
-      color:        var(--color-muted);
-      margin-bottom: 2px;
-    }
-
-    .tab-cost {
-      font-weight: 700;
-      font-size:   14px;
-    }
-
-    .tab-time {
-      font-size: 11px;
-      color:     var(--color-muted);
-    }
-  }
-}
-
-/* ─── Responsive (narrow screens) ─────────────────────────────────────── */
-@media (max-width: 768px) {
+/* ─── Responsive ───────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
   :root { --sidebar-w: 100%; }
 
   body { overflow: auto; }
+
+  header { height: auto; padding: .7rem 1rem; flex-wrap: wrap; gap: .5rem; }
 
   .layout {
     flex-direction: column;
@@ -598,21 +903,21 @@ select {
   }
 
   .sidebar {
-    width:     100%;
-    min-width: 100%;
+    width:        100%;
+    min-width:    100%;
     border-right: none;
-    border-bottom: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--trait);
   }
 
   .main {
-    height: 60dvh;
+    height:      60dvh;
     flex-shrink: 0;
   }
 
   .chart-panel { height: 200px; }
 }
 
-/* ─── Vue mount wrapper ─────────────────────────────────────────────────── */
+/* ─── Enveloppe de montage Vue ─────────────────────────────────────────── */
 /* Vue mounts the whole app inside <div id="app">. `display: contents` makes
    that wrapper generate no box of its own, so <header>, #token-warning and
    .layout participate in <body>'s flex column exactly as before the Vue
