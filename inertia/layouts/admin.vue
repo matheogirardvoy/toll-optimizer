@@ -18,6 +18,7 @@ const navItems: { href: string; label: string; icon: string; exact?: boolean }[]
   { href: '/admin/tolls', label: 'Référentiel des péages', icon: '🛣️' },
   { href: '/admin/prices', label: 'Grilles tarifaires', icon: '💶' },
   { href: '/admin/stations', label: 'Gares & tarifs', icon: '🚧' },
+  { href: '/admin/duplicates', label: 'Doublons de gares', icon: '🧩' },
 ]
 
 function isActive(item: (typeof navItems)[number]): boolean {
@@ -49,7 +50,7 @@ function logout() {
 
 <template>
   <header>
-    <span class="header-logo">🛣️ TollOptimizer</span>
+    <span class="header-logo">TollOptimizer</span>
     <span class="header-subtitle">Administration</span>
     <a href="/" class="header-back">← Retour au site</a>
   </header>

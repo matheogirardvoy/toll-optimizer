@@ -96,6 +96,42 @@ const routes = {
     tokens: [{"old":"/admin/stations/:id","type":0,"val":"admin","end":""},{"old":"/admin/stations/:id","type":0,"val":"stations","end":""},{"old":"/admin/stations/:id","type":1,"val":"id","end":""}],
     types: placeholder as Registry['admin.stations.show']['types'],
   },
+  'admin.stations.network': {
+    methods: ["PUT"],
+    pattern: '/admin/stations/:id/network',
+    tokens: [{"old":"/admin/stations/:id/network","type":0,"val":"admin","end":""},{"old":"/admin/stations/:id/network","type":0,"val":"stations","end":""},{"old":"/admin/stations/:id/network","type":1,"val":"id","end":""},{"old":"/admin/stations/:id/network","type":0,"val":"network","end":""}],
+    types: placeholder as Registry['admin.stations.network']['types'],
+  },
+  'admin.stations.prices.store': {
+    methods: ["POST"],
+    pattern: '/admin/stations/:id/prices',
+    tokens: [{"old":"/admin/stations/:id/prices","type":0,"val":"admin","end":""},{"old":"/admin/stations/:id/prices","type":0,"val":"stations","end":""},{"old":"/admin/stations/:id/prices","type":1,"val":"id","end":""},{"old":"/admin/stations/:id/prices","type":0,"val":"prices","end":""}],
+    types: placeholder as Registry['admin.stations.prices.store']['types'],
+  },
+  'admin.stations.prices.destroy': {
+    methods: ["DELETE"],
+    pattern: '/admin/stations/:id/prices',
+    tokens: [{"old":"/admin/stations/:id/prices","type":0,"val":"admin","end":""},{"old":"/admin/stations/:id/prices","type":0,"val":"stations","end":""},{"old":"/admin/stations/:id/prices","type":1,"val":"id","end":""},{"old":"/admin/stations/:id/prices","type":0,"val":"prices","end":""}],
+    types: placeholder as Registry['admin.stations.prices.destroy']['types'],
+  },
+  'admin.duplicates': {
+    methods: ["GET","HEAD"],
+    pattern: '/admin/duplicates',
+    tokens: [{"old":"/admin/duplicates","type":0,"val":"admin","end":""},{"old":"/admin/duplicates","type":0,"val":"duplicates","end":""}],
+    types: placeholder as Registry['admin.duplicates']['types'],
+  },
+  'admin.duplicates.preview': {
+    methods: ["GET","HEAD"],
+    pattern: '/admin/duplicates/preview',
+    tokens: [{"old":"/admin/duplicates/preview","type":0,"val":"admin","end":""},{"old":"/admin/duplicates/preview","type":0,"val":"duplicates","end":""},{"old":"/admin/duplicates/preview","type":0,"val":"preview","end":""}],
+    types: placeholder as Registry['admin.duplicates.preview']['types'],
+  },
+  'admin.duplicates.merge': {
+    methods: ["POST"],
+    pattern: '/admin/duplicates/merge',
+    tokens: [{"old":"/admin/duplicates/merge","type":0,"val":"admin","end":""},{"old":"/admin/duplicates/merge","type":0,"val":"duplicates","end":""},{"old":"/admin/duplicates/merge","type":0,"val":"merge","end":""}],
+    types: placeholder as Registry['admin.duplicates.merge']['types'],
+  },
 } as const satisfies Record<string, AdonisEndpoint>
 
 export { routes }

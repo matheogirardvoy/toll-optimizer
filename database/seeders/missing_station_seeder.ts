@@ -92,8 +92,9 @@ const MISSING_STATIONS: string[] = [
   // A63/A64 Pays basque et Landes
   'Biarritz demi-échangeur sud',
   'Biarritz demi-échangeur nord',
-  'Péage de la Négresse',
-  'Péage de Biriatou',
+  // « Péage de la Négresse » et « Péage de Biriatou » retirés : doublonnaient les
+  // gares référentiel La Negresse (#79) et Biriatou (#78) ; fusionnés via
+  // `stations:merge`, leurs libellés de grille sont désormais des alias.
   'Bayonne nord',
   'Bayonne Mousserolles',
   'Ondres',

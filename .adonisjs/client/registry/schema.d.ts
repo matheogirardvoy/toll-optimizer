@@ -187,4 +187,76 @@ export interface Registry {
       errorResponse: ExtractErrorResponse<Awaited<ReturnType<import('#controllers/admin/stations_controller').default['show']>>>
     }
   }
+  'admin.stations.network': {
+    methods: ["PUT"]
+    pattern: '/admin/stations/:id/network'
+    types: {
+      body: ExtractBody<InferInput<(typeof import('#validators/networks').assignStationNetworkValidator)>>
+      paramsTuple: [ParamValue]
+      params: { id: ParamValue }
+      query: ExtractQuery<InferInput<(typeof import('#validators/networks').assignStationNetworkValidator)>>
+      response: ExtractResponse<Awaited<ReturnType<import('#controllers/admin/stations_controller').default['updateNetwork']>>>
+      errorResponse: ExtractErrorResponse<Awaited<ReturnType<import('#controllers/admin/stations_controller').default['updateNetwork']>>> | { status: 422; response: { errors: SimpleError[] } }
+    }
+  }
+  'admin.stations.prices.store': {
+    methods: ["POST"]
+    pattern: '/admin/stations/:id/prices'
+    types: {
+      body: ExtractBody<InferInput<(typeof import('#validators/station_prices').storeStationPriceValidator)>>
+      paramsTuple: [ParamValue]
+      params: { id: ParamValue }
+      query: ExtractQuery<InferInput<(typeof import('#validators/station_prices').storeStationPriceValidator)>>
+      response: ExtractResponse<Awaited<ReturnType<import('#controllers/admin/station_prices_controller').default['store']>>>
+      errorResponse: ExtractErrorResponse<Awaited<ReturnType<import('#controllers/admin/station_prices_controller').default['store']>>> | { status: 422; response: { errors: SimpleError[] } }
+    }
+  }
+  'admin.stations.prices.destroy': {
+    methods: ["DELETE"]
+    pattern: '/admin/stations/:id/prices'
+    types: {
+      body: {}
+      paramsTuple: [ParamValue]
+      params: { id: ParamValue }
+      query: {}
+      response: ExtractResponse<Awaited<ReturnType<import('#controllers/admin/station_prices_controller').default['destroy']>>>
+      errorResponse: ExtractErrorResponse<Awaited<ReturnType<import('#controllers/admin/station_prices_controller').default['destroy']>>>
+    }
+  }
+  'admin.duplicates': {
+    methods: ["GET","HEAD"]
+    pattern: '/admin/duplicates'
+    types: {
+      body: {}
+      paramsTuple: []
+      params: {}
+      query: {}
+      response: ExtractResponse<Awaited<ReturnType<import('#controllers/admin/duplicates_controller').default['index']>>>
+      errorResponse: ExtractErrorResponse<Awaited<ReturnType<import('#controllers/admin/duplicates_controller').default['index']>>>
+    }
+  }
+  'admin.duplicates.preview': {
+    methods: ["GET","HEAD"]
+    pattern: '/admin/duplicates/preview'
+    types: {
+      body: {}
+      paramsTuple: []
+      params: {}
+      query: {}
+      response: ExtractResponse<Awaited<ReturnType<import('#controllers/admin/duplicates_controller').default['preview']>>>
+      errorResponse: ExtractErrorResponse<Awaited<ReturnType<import('#controllers/admin/duplicates_controller').default['preview']>>>
+    }
+  }
+  'admin.duplicates.merge': {
+    methods: ["POST"]
+    pattern: '/admin/duplicates/merge'
+    types: {
+      body: ExtractBody<InferInput<(typeof import('#validators/duplicates').mergeStationsValidator)>>
+      paramsTuple: []
+      params: {}
+      query: ExtractQuery<InferInput<(typeof import('#validators/duplicates').mergeStationsValidator)>>
+      response: ExtractResponse<Awaited<ReturnType<import('#controllers/admin/duplicates_controller').default['merge']>>>
+      errorResponse: ExtractErrorResponse<Awaited<ReturnType<import('#controllers/admin/duplicates_controller').default['merge']>>> | { status: 422; response: { errors: SimpleError[] } }
+    }
+  }
 }

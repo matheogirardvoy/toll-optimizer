@@ -15,6 +15,8 @@ const DashboardController = () => import('#controllers/admin/dashboard_controlle
 const TollsController = () => import('#controllers/admin/tolls_controller')
 const PricesController = () => import('#controllers/admin/prices_controller')
 const StationsController = () => import('#controllers/admin/stations_controller')
+const StationPricesController = () => import('#controllers/admin/station_prices_controller')
+const DuplicatesController = () => import('#controllers/admin/duplicates_controller')
 const OptimizeController = () => import('#controllers/optimize_controller')
 
 router.on('/').renderInertia('home', {}).as('home')
@@ -50,5 +52,22 @@ router
 
     router.get('admin/stations', [StationsController, 'index']).as('admin.stations')
     router.get('admin/stations/:id', [StationsController, 'show']).as('admin.stations.show')
+    router
+      .put('admin/stations/:id/network', [StationsController, 'updateNetwork'])
+      .as('admin.stations.network')
+    router
+      .post('admin/stations/:id/prices', [StationPricesController, 'store'])
+      .as('admin.stations.prices.store')
+    router
+      .delete('admin/stations/:id/prices', [StationPricesController, 'destroy'])
+      .as('admin.stations.prices.destroy')
+
+    router.get('admin/duplicates', [DuplicatesController, 'index']).as('admin.duplicates')
+    router
+      .get('admin/duplicates/preview', [DuplicatesController, 'preview'])
+      .as('admin.duplicates.preview')
+    router
+      .post('admin/duplicates/merge', [DuplicatesController, 'merge'])
+      .as('admin.duplicates.merge')
   })
   .use(middleware.auth())
