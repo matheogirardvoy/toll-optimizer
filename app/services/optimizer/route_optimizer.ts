@@ -456,6 +456,7 @@ export default class RouteOptimizer {
       geometry: route.geometry,
       vehicleClass: query.vehicleClass,
       date: query.date,
+      tollCollections: route.tollCollections,
     })
 
     const collections = route.tollCollections ?? []

@@ -155,6 +155,30 @@ Chaque section est tarifée par `PriceLookup.forTraversal` (grille en vigueur
    amont comme en aval ; le couple n'est retenu que si **la grille le
    tarife** — le prix commercial sert de preuve de plausibilité.
 
+3. **Réparation par annotations Mapbox.** L'API Directions (`steps=true`)
+   annote chaque point de perception réellement franchi
+   (`toll_collection`). Une annotation sans franchissement détecté dans sa
+   fenêtre curviligne (500 m) révèle une gare manquée par le corridor
+   strict : sur les grandes barrières pleine voie, le point du référentiel
+   projette parfois à **14-17 m** du tracé (Le Bignon et Virsac sur
+   A83/A10 — les **deux** BPV manquées d'un coup : aucun orphelin, le
+   repli 2 aveugle, et 33,20 € perdus **sans anomalie**). La gare la plus
+   proche de l'annotation (**≤ 400 m**, même rayon que l'appariement
+   d'affichage) est injectée comme franchissement ordinaire — l'annotation
+   atteste le passage, seul le plafond des 10 m saute. Une annotation sans
+   gare à proximité (péage étranger, référentiel incomplet) est ignorée.
+
+4. **Scission aux BPV intermédiaires.** Quand le couple d'extrémités d'un
+   bloc fermé manque à la grille et que des BPV intermédiaires ont été
+   enjambées (§3.3), l'une d'elles était peut-être le vrai règlement :
+   A83, A10 et A63 étant toutes ASF, le bloc fusionne
+   Le Bignon → **Virsac** → Biriatou alors qu'on paie à Virsac. La grille
+   arbitre : le plus long préfixe tarifé l'emporte (le ticket se garde
+   jusqu'au règlement), le reste est résolu récursivement et un
+   franchissement resté seul repart dans le circuit des orphelins (repli 1
+   ou anomalie). Paris→Marseille est insensible : ses couples sont en
+   grille, la scission ne se déclenche jamais.
+
 ### 3.5 Anomalies plutôt qu'échecs
 
 Tout ce qui reste intarifable devient une entrée de `issues` :
@@ -310,9 +334,22 @@ prévisualisation calculé côté client) : `{ "points": [[lng, lat], …] }` �
   complet mais les péages que Mapbox annote sur les tracés affichés
   (prévisualisation : extraction côté front + enrichissement via
   `POST /api/tolls/match` ; variantes d'optimisation : `mapboxTolls`
-  déjà enrichis par le serveur). La popup montre le nom du référentiel,
-  la route, le type, le réseau, la gare, le sens et le nombre de voies ;
-  un point sans correspondance est signalé « absent du référentiel local ».
+  déjà enrichis par le serveur). Les données Mapbox n'annotent pas toutes
+  les gares (Bourges, Montluçon, Meyrargues absentes sur
+  Rennes→Gréoux-les-Bains) : pour les variantes d'optimisation, les
+  `pricing.crossings` dont la gare n'est couverte par aucune annotation
+  appariée sont ajoutés à la layer, au point du référentiel — le miroir,
+  côté affichage, de la réparation par annotations du pricer. Chaque gare
+  ainsi ajoutée absorbe l'éventuelle annotation restée sans correspondance
+  à moins de 800 m (`STRAY_ANNOTATION_MERGE_METERS`) : Mapbox annote
+  parfois la chaussée bien au-delà du rayon d'appariement de 400 m
+  (La Gravelle : 741 m), et sans fusion la même barrière porterait deux
+  points. La popup montre le nom du référentiel, la route, le type, le
+  réseau, la gare, le sens et le nombre de voies ; un point sans
+  correspondance est signalé « absent du référentiel local », une gare
+  sans annotation « non signalée par Mapbox » ou « annotation Mapbox trop
+  éloignée pour être appariée » selon le cas. (La prévisualisation, sans
+  pricing, reste limitée aux annotations.)
 - **Prix des portions sur la carte** : pour la variante active, chaque
   section tarifée est dessinée en surcouche violette (sous-polyligne
   découpée du tracé entre les `alongMeters` d'entrée et de sortie) avec
@@ -371,15 +408,18 @@ docker compose run --rm node node ace optimize:route "45.764,4.8357" "48.8566,2.
 | `MAX_ITERATIONS` | 5 | borne de la boucle greedy |
 | `UNPRICEABLE_CROSSING_PENALTY_CENTS` | 2 000 | pénalité pessimiste par franchissement intarifable |
 | `MATCH_RADIUS_METERS` | 400 m | appariement point `toll_collection` Mapbox → péage du référentiel : Mapbox annote la chaussée en amont de la barrière (285 m d'écart à Fleury-en-Bière, 224 m à Villefranche-Limas) ; gares voisines séparées d'au moins ~450 m, « le plus proche gagne » |
+| `ANNOTATION_MATCH_RADIUS_METERS` | 400 m | réparation par annotations (repli 3 du §3.4) : même rayon et même logique que l'appariement d'affichage |
+| `ANNOTATION_COVER_WINDOW_METERS` | 500 m | fenêtre curviligne dans laquelle une annotation est considérée couverte par un franchissement déjà détecté |
 
 ---
 
 ## 9. Validation
 
-- **30 tests unitaires** (`node ace test unit`) : géométrie, matching,
-  appariement (dont BPV intermédiaire), replis, réparation, greedy,
-  pénalité pessimiste — sur un monde synthétique (autoroute factice à
-  45° N, base SQLite de test isolée dans `tmp/test.sqlite3`).
+- **34 tests unitaires** (`node ace test unit`) : géométrie, matching,
+  appariement (dont BPV intermédiaire et scission grid-guidée), replis
+  (dont réparation par annotations), réparation, greedy, pénalité
+  pessimiste — sur un monde synthétique (autoroute factice à 45° N, base
+  SQLite de test isolée dans `tmp/test.sqlite3`).
 - **Trajets de référence exacts au centime** (grilles 2026, classe 1),
   à re-vérifier après tout changement de matching ou d'appariement :
 
@@ -390,6 +430,7 @@ docker compose run --rm node node ace optimize:route "45.764,4.8357" "48.8566,2.
 | Paris → Lille | 18,90 € (Chamant → Fresnes) |
 | Marseille → Lyon | 28,10 € (Lançon → Vienne) |
 | Paris → Marseille | 69,40 € (deux sections APRR + ASF) |
+| Rennes → Bilbao | 33,20 € (Le Bignon → Virsac, via replis 3 + 4) + anomalies A63/Biriatou/Espagne |
 
 - Scénario produit de référence : Lyon → Paris à 20 €/h recommande
   l'hybride **313 min / 3,30 €** (A42 + RCEA), soit 38 € économisés pour
